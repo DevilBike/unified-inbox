@@ -1,7 +1,7 @@
 // App state and everything that talks to the mailboxes. The UI only calls this.
 import * as store from './store.js';
 import { CONFIG } from './config.js';
-import { buildStep, runSteps, googleTokenFromParams, microsoftExchangeCode, microsoftRefresh, NeedsSignIn } from './auth.js';
+import { buildStep, runSteps, googleTokenFromParams, microsoftExchangeCode, microsoftRefresh, helperExchange, helperRefresh, NeedsSignIn } from './auth.js';
 import { GmailAdapter } from './providers/gmail.js';
 import { GraphAdapter } from './providers/graph.js';
 import { pool } from './providers/http.js';
@@ -17,7 +17,7 @@ export function subscribe(fn) { listeners.add(fn); return () => listeners.delete
 function emit(event, data) { for (const fn of listeners) { try { fn(event, data); } catch (e) { console.error(e); } } }
 
 export const state = {
-  settings: { googleClientId: '', microsoftClientId: '', sweep: true, remoteImages: false, theme: 'dark' },
+  settings: { googleClientId: '', microsoftClientId: '', tokenHelperUrl: '', sweep: true, remoteImages: false, autoReconnect: true, theme: 'dark' },
   accounts: [],
   rules: [],
 };
@@ -28,7 +28,7 @@ const refreshing = new Map();
 // ---------- startup ----------
 export async function init() {
   const saved = (await store.kv.get('settings')) || {};
-  state.settings = { ...state.settings, googleClientId: CONFIG.googleClientId, microsoftClientId: CONFIG.microsoftClientId, ...dropEmpty(saved) };
+  state.settings = { ...state.settings, googleClientId: CONFIG.googleClientId, microsoftClientId: CONFIG.microsoftClientId, tokenHelperUrl: CONFIG.tokenHelperUrl || '', ...dropEmpty(saved) };
   state.accounts = (await store.accounts.all()).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const rules = await store.kv.get('rules');
   state.rules = rules ? normalizeRules(rules) : DEFAULT_RULES;
@@ -70,12 +70,16 @@ async function markNeedsSignIn(account) {
   emit('accounts');
 }
 
+export function helperUrl() { return (state.settings.tokenHelperUrl || '').trim(); }
+
 async function tokenFor(account) {
   const t = account.token;
   if (t?.accessToken && t.expiresAt > Date.now()) return t.accessToken;
-  if (account.provider === 'microsoft' && t?.refreshToken) {
+  const canRefresh = t?.refreshToken && (t.viaHelper ? helperUrl() : account.provider === 'microsoft');
+  if (canRefresh) {
     if (!refreshing.has(account.id)) {
-      refreshing.set(account.id, microsoftRefresh(state.settings.microsoftClientId, t.refreshToken)
+      const renew = t.viaHelper ? helperRefresh(helperUrl(), account.provider, t.refreshToken) : microsoftRefresh(state.settings.microsoftClientId, t.refreshToken);
+      refreshing.set(account.id, renew
         .then(async (nt) => { account.token = nt; account.status = 'ok'; await store.accounts.put(account); emit('accounts'); return nt.accessToken; })
         .finally(() => refreshing.delete(account.id)));
     }
@@ -85,8 +89,27 @@ async function tokenFor(account) {
   throw new NeedsSignIn(account);
 }
 
+// True when this mailbox renews its own sign-in in the background.
+function selfRenewing(a) {
+  return !!(a.token?.refreshToken && (a.token.viaHelper ? helperUrl() : a.provider === 'microsoft'));
+}
+
 export function accountsNeedingSignIn() {
-  return state.accounts.filter((a) => a.status === 'needs-signin' || !a.token?.accessToken || (a.provider === 'google' && a.token.expiresAt <= Date.now() + 60000));
+  return state.accounts.filter((a) => a.status === 'needs-signin' || a.status === 'needs-password' || !a.token?.accessToken || (!selfRenewing(a) && a.provider === 'google' && a.token.expiresAt <= Date.now() + 60000));
+}
+
+// With a token helper set up, mailboxes that still need one more sign-in to stay signed in.
+export function accountsToUpgrade() {
+  if (!helperUrl()) return [];
+  return state.accounts.filter((a) => !a.token?.viaHelper || !a.token?.refreshToken);
+}
+
+// Mailboxes that can be refreshed quietly on your next tap: expired or expiring within
+// 5 minutes. Ones where a quiet refresh already failed wait for you to sign in.
+export function autoReconnectCandidates() {
+  const soon = Date.now() + 5 * 60000;
+  return state.accounts.filter((a) => a.status !== 'needs-password' && (a.status === 'needs-signin' || !a.token?.accessToken
+    || (!selfRenewing(a) && a.token.expiresAt <= soon)));
 }
 
 function requireClientId(kind) {
@@ -97,7 +120,8 @@ function requireClientId(kind) {
 
 async function finishStep(kind, step, params) {
   const clientId = requireClientId(kind);
-  const token = kind === 'google' ? googleTokenFromParams(params) : await microsoftExchangeCode(clientId, step, params);
+  const token = step.helper ? await helperExchange(helperUrl(), kind, step, params)
+    : kind === 'google' ? googleTokenFromParams(params) : await microsoftExchangeCode(clientId, step, params);
   const temp = { provider: kind, token, email: '' };
   const ctx = { account: temp, getToken: async () => token.accessToken };
   let email, name = '';
@@ -110,7 +134,7 @@ async function finishStep(kind, step, params) {
 // Call from a click. Adds a new mailbox.
 export async function addAccount(kind) {
   const clientId = requireClientId(kind);
-  const step = await buildStep(kind, { clientId, silent: false });
+  const step = await buildStep(kind, { clientId, silent: false, helper: helperUrl() });
   const [res] = await runSteps([step]);
   if (res.error) throw new Error(res.error);
   const { email, name, token } = await finishStep(kind, step, res.params);
@@ -135,7 +159,7 @@ export async function reconnect(list = accountsNeedingSignIn(), { interactive = 
   const steps = [];
   for (const a of list) {
     const clientId = requireClientId(a.provider);
-    const s = await buildStep(a.provider, { clientId, loginHint: a.email, silent: !interactive });
+    const s = await buildStep(a.provider, { clientId, loginHint: a.email, silent: !interactive, helper: helperUrl() });
     s.accountId = a.id;
     steps.push(s);
   }
@@ -143,10 +167,15 @@ export async function reconnect(list = accountsNeedingSignIn(), { interactive = 
   const ok = [], failed = [];
   for (const r of results) {
     const account = state.accounts.find((a) => a.id === r.step.accountId);
-    if (r.error) { failed.push({ account, error: r.error }); continue; }
+    if (r.error) {
+      failed.push({ account, error: r.error });
+      if (!interactive) { account.status = 'needs-password'; await store.accounts.put(account); }
+      continue;
+    }
     try {
       const { email, token } = await finishStep(account.provider, r.step, r.params);
       if (email !== account.email) { failed.push({ account, error: `Signed in as ${email} instead of ${account.email}.` }); continue; }
+      if (!token.refreshToken && account.token?.refreshToken && account.token.viaHelper === token.viaHelper) token.refreshToken = account.token.refreshToken;
       account.token = token; account.status = 'ok';
       await store.accounts.put(account);
       ok.push(account);

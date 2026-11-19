@@ -1,11 +1,12 @@
 # Setup guide
 
-About 30–40 minutes, once. You'll do four things:
+About 45–60 minutes, once. You'll do five things:
 
 1. Turn on GitHub Pages (so the app has a web address)
 2. Register the app with Google (for your Gmail mailboxes)
 3. Register the app with Microsoft (for Outlook.com / Hotmail / Live)
 4. Open the app, paste in the two IDs, and add your mailboxes
+5. Optional, recommended: set up the free token helper so you stay signed in
 
 Throughout this guide, the app's address is:
 
@@ -122,6 +123,52 @@ If your browser blocks the sign-in window, allow pop-ups for `devilbike.github.i
 
 ---
 
+## 5. Stay signed in (token helper, about 15 minutes)
+
+Without this, Gmail sign-ins run out every hour and Outlook's every day. The app reconnects on your next tap, with a brief window flash. The helper is a tiny free Cloudflare Worker that renews sign-ins in the background, so you sign in once and stay signed in. It stores nothing.
+
+### 5a. Google: get the client secret and publish the app
+
+1. **console.cloud.google.com** → **Google Auth Platform** → **Clients** → `Unified Inbox web`.
+2. Under **Client secrets**, copy the secret (or **Add secret** and copy it).
+3. **Audience** → **Publish app** → **Confirm**. This matters: sign-ins for apps left in *Testing* expire every 7 days.
+   Google will still show its "unverified app" warning when you sign in. That's fine for an app only you use.
+
+### 5b. Microsoft: create a client secret and switch to "Web"
+
+1. **entra.microsoft.com** → **App registrations** → `Unified Inbox` → **Certificates & secrets** → **New client secret**.
+   Description: `token helper`, Expires: **24 months** → **Add**. Copy the **Value** right away (it's only shown once). Don't copy the Secret ID.
+   Put a reminder in your calendar for when it expires.
+2. **Authentication** → under **Single-page application**, delete both sign-in return addresses.
+3. **Add a platform** → **Web** → add `https://devilbike.github.io/unified-inbox/auth.html` → **Configure**. Then **Add URI** under **Web** → `http://localhost:8080/auth.html` → **Save**.
+
+### 5c. Create the helper on Cloudflare
+
+1. Sign up free at **dash.cloudflare.com**.
+2. **Workers & Pages** (under **Compute**) → **Create** → **Worker** → **Start with Hello World** → name it `unified-inbox-tokens` → **Deploy**.
+3. **Edit code** → delete everything → paste the contents of [`token-helper/worker.js`](token-helper/worker.js) → **Deploy**.
+4. Back on the worker → **Settings** → **Variables and Secrets** → **Add** each of these, then **Deploy**:
+
+   | Name | Type | Value |
+   | --- | --- | --- |
+   | `GOOGLE_CLIENT_ID` | Text | your Google client ID |
+   | `GOOGLE_CLIENT_SECRET` | Secret | the Google secret from 5a |
+   | `MS_CLIENT_ID` | Text | your Microsoft application (client) ID |
+   | `MS_CLIENT_SECRET` | Secret | the Microsoft secret value from 5b |
+   | `ALLOWED_ORIGINS` | Text | `https://devilbike.github.io,http://localhost:8080` |
+
+5. Copy the worker's address from its overview page, e.g. `https://unified-inbox-tokens.yourname.workers.dev`.
+
+### 5d. Turn it on in the app
+
+1. On GitHub, edit `js/config.js` and paste the address between the quotes after `tokenHelperUrl:` → **Commit changes**. (Or paste it into **Settings → Sign-in setup → Token helper address** on each device.)
+2. Open the app → **Settings** → **Test helper** should say Google and Microsoft are ready.
+3. A **Stay signed in** card appears → **Sign in once more** → go through each mailbox one last time.
+
+That's it. Do step 3 once on each device (PC and phone).
+
+---
+
 ## Install it like an app
 
 - **Windows (Chrome or Edge):** open the app → click the **Install** icon at the right end of the address bar (or **⋮ → Cast, save and share → Install page as app**).
@@ -148,7 +195,7 @@ Then open **http://localhost:8080**. Sign-in works there too because you added t
 
 ## Good to know
 
-- **Gmail sign-ins last about an hour.** When they expire, a **Reconnect** button appears at the top. One tap refreshes all of them, and the window closes by itself. Outlook sign-ins renew automatically for about a day, then they need the same tap.
+- **Without the token helper,** Gmail sign-ins last about an hour and Outlook's about a day. The app reconnects them on your next tap (a window flashes for a second), or you can tap **Reconnect** at the top. Turn this off in **Settings** if you'd rather tap it yourself. **With the helper (step 5),** you stay signed in.
 - **Snooze** works in every mailbox: snoozed mail sits in a **Snoozed** label/folder and comes back to the Inbox the next time the app is open after the snooze time.
 - **Promotions in Outlook** are detected from Outlook's own "Other" (Focused Inbox) sorting plus an unsubscribe link, so keep Focused Inbox turned on in Outlook.com settings.
 - **Your data:** mail goes straight from your device to Google and Microsoft. Nothing is stored on any server. Mail, rules and sign-ins are kept in the browser on each device; **Settings → Clear this device** erases them.

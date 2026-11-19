@@ -28,7 +28,7 @@ function renderNav() {
     <div>${otherViews.map((v) => item(link(v.key), v.name, isMail && r.sub === v.key, v.key)).join('')}</div>
     <div><h2>Mailboxes</h2>
       <a class="item ${acct === 'all' ? 'active' : ''}" href="#/mail/${isMail ? r.sub : 'inbox'}"><span class="dot" style="background:#E7E9EE"></span><span>All mailboxes</span></a>
-      ${svc.state.accounts.map((a) => `<a class="item ${acct === a.id ? 'active' : ''}" href="#/mail/${isMail ? r.sub : 'inbox'}?acct=${encodeURIComponent(a.id)}" title="${esc(a.email)}"><span class="dot" style="background:${esc(a.color)}"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(shortName(a))}</span>${a.status === 'needs-signin' ? '<span class="count" style="color:var(--warn)">!</span>' : ''}</a>`).join('')}
+      ${svc.state.accounts.map((a) => `<a class="item ${acct === a.id ? 'active' : ''}" href="#/mail/${isMail ? r.sub : 'inbox'}?acct=${encodeURIComponent(a.id)}" title="${esc(a.email)}"><span class="dot" style="background:${esc(a.color)}"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(shortName(a))}</span>${a.status === 'needs-signin' || a.status === 'needs-password' ? '<span class="count" style="color:var(--warn)">!</span>' : ''}</a>`).join('')}
     </div>
     <div><h2>More</h2>
       ${item('#/calendar', 'Calendar', r.section === 'calendar', 'calendar')}
@@ -70,7 +70,13 @@ function updateReconnect() {
 
 $('#reconnectBtn').onclick = async () => {
   try {
-    const { ok, failed } = await svc.reconnect();
+    const { ok, failed } = await svc.reconnect(svc.accountsNeedingSignIn().filter((a) => a.status !== 'needs-password'));
+    const pw = svc.state.accounts.filter((a) => a.status === 'needs-password');
+    if (pw.length && !ok.length && !failed.length) {
+      const r = await svc.reconnect(pw, { interactive: true });
+      if (r.failed.length) toast(r.failed[0].error); else render();
+      return;
+    }
     if (failed.length) {
       toast(`${failed.length} mailbox${failed.length > 1 ? 'es' : ''} need${failed.length > 1 ? '' : 's'} you to sign in`, {
         action: 'Sign in', timeout: 15000,
@@ -80,6 +86,23 @@ $('#reconnectBtn').onclick = async () => {
     if (ok.length) { toast(`Reconnected ${ok.length}`); if (route().section === 'mail' || route().section === 'search') refresh(); }
   } catch (e) { showError(e); }
 };
+
+// Quietly reconnect on your next tap. Browsers only allow the sign-in window
+// right after a tap or click, so this rides along with whatever you tap.
+let autoBusy = false;
+let lastAuto = 0;
+document.addEventListener('pointerdown', (e) => {
+  if (!svc.state.settings.autoReconnect || autoBusy || Date.now() - lastAuto < 60000) return;
+  if (e.target.closest('#reconnectBtn, dialog')) return;
+  const list = svc.autoReconnectCandidates();
+  if (!list.length) return;
+  autoBusy = true;
+  lastAuto = Date.now();
+  svc.reconnect(list).then(({ ok, failed }) => {
+    if (failed.length) toast(`${failed.length} mailbox${failed.length > 1 ? 'es need' : ' needs'} you to sign in. Tap Reconnect at the top.`, { timeout: 8000 });
+    if (ok.length && (route().section === 'mail' || route().section === 'search') && !mail.selected) refresh();
+  }).catch(() => {}).finally(() => { autoBusy = false; });
+}, true);
 
 // ---------- global UI ----------
 $('#menuBtn').onclick = () => app.classList.toggle('nav-open');

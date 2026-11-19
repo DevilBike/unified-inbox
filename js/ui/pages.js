@@ -2,6 +2,7 @@ import { $, $$, esc, toast, showError, openDialog, confirmDialog, fullTime, icon
 import * as svc from '../service.js';
 import { TARGET_FOLDERS, folderName } from '../core/folders.js';
 import { normalizeRule, describeMatch, isCheckableHere } from '../core/rules.js';
+import { helperHealth } from '../auth.js';
 import { gmailXmlToRules, parseRulesJson, exportRulesJson, mergeRules } from '../core/importers.js';
 import { BUCKET_STAY, BUCKET_TRASH } from '../core/cleanup.js';
 import { openCompose } from './compose.js';
@@ -312,28 +313,31 @@ export function showSettings() {
   const body = page('Settings');
   const s = svc.state.settings;
   body.innerHTML = `<div class="cols"><section class="col-main">
+    <div id="upgradeCard"></div>
     <div class="card"><h2>Mailboxes</h2>
       <div id="acctList" style="display:flex;flex-direction:column;gap:10px"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="addG">Add Gmail</button><button class="btn primary" id="addM">Add Outlook / Hotmail</button></div>
-      <p style="font-size:12px">Gmail sign-ins last about an hour; when they expire, tap “Reconnect” at the top and they all refresh together.</p>
+      <p style="font-size:12px">${svc.helperUrl() ? 'Mailboxes signed in through your token helper stay signed in.' : 'Gmail sign-ins last about an hour. They refresh on your next tap when they run out, or tap “Reconnect” at the top. Set up the token helper (SETUP.md) to stay signed in.'}</p>
     </div>
     <form class="card" id="prefs"><h2>Preferences</h2>
       <label class="check"><input type="checkbox" name="sweep" ${s.sweep ? 'checked' : ''}> Sort new mail with my rules while the app is open</label>
       <label class="check"><input type="checkbox" name="remoteImages" ${s.remoteImages ? 'checked' : ''}> Always show images in emails <span class="muted">(off blocks tracking pixels)</span></label>
+      <label class="check"><input type="checkbox" name="autoReconnect" ${s.autoReconnect ? 'checked' : ''}> Reconnect mailboxes automatically when I tap <span class="muted">(a sign-in window flashes briefly about once an hour)</span></label>
     </form>
   </section><aside class="col-side">
     <form class="card" id="ids"><h2>Sign-in setup</h2><p>From Google Cloud and Microsoft Azure. See <a href="https://github.com/DevilBike/unified-inbox/blob/main/SETUP.md" target="_blank" rel="noopener">SETUP.md</a>.</p>
       <label class="field">Google client ID<input class="input" name="googleClientId" value="${esc(s.googleClientId || '')}" placeholder="….apps.googleusercontent.com"></label>
       <label class="field">Microsoft application (client) ID<input class="input" name="microsoftClientId" value="${esc(s.microsoftClientId || '')}" placeholder="00000000-0000-0000-0000-000000000000"></label>
+      <label class="field">Token helper address <span class="muted" style="font-size:12px">(optional, keeps you signed in)</span><input class="input" name="tokenHelperUrl" value="${esc(s.tokenHelperUrl || '')}" placeholder="https://unified-inbox-tokens.yourname.workers.dev"></label>
       <p style="font-size:12px">Sign-in return address to register: <code>${esc(new URL('auth.html', location.href.split('#')[0]).href)}</code></p>
-      <div><button class="btn">Save</button></div></form>
+      <div style="display:flex;gap:8px"><button class="btn">Save</button><button type="button" class="btn" id="testHelper">Test helper</button></div></form>
     <div class="card"><h2>This device</h2><p>Mail, rules and sign-ins are stored only in this browser. Export your rules before clearing.</p>
       <div><button class="btn danger" id="wipe">Sign out everywhere and clear this device</button></div></div>
   </aside></div>`;
   const renderAccts = () => {
     $('#acctList').innerHTML = svc.state.accounts.map((a) => `<div style="display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:10px;padding:12px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="dot" style="background:${esc(a.color)}"></span><strong style="flex:1;min-width:160px">${esc(a.email)}</strong>
-        <span class="muted" style="font-size:12px">${a.provider === 'google' ? 'Gmail' : 'Outlook'} · ${a.status === 'needs-signin' ? '<span style="color:var(--warn)">needs reconnect</span>' : 'connected'}</span>
+        <span class="muted" style="font-size:12px">${a.provider === 'google' ? 'Gmail' : 'Outlook'} · ${a.status === 'needs-password' ? '<span style="color:var(--warn)">sign in again</span>' : a.status === 'needs-signin' ? '<span style="color:var(--warn)">needs reconnect</span>' : 'connected'}</span>
         <input type="color" value="${esc(a.color)}" data-color="${esc(a.id)}" aria-label="Color for ${esc(a.email)}" style="width:36px;height:30px;border:0;background:none">
         <button class="btn small" data-signin="${esc(a.id)}">Sign in again</button><button class="btn small danger" data-rm="${esc(a.id)}">Remove</button></div>
       <label class="field">Signature<textarea class="input" rows="2" data-sig="${esc(a.id)}" placeholder="Added to the end of messages you send from this address">${esc(a.signature || '')}</textarea></label></div>`).join('') || '<p>No mailboxes yet.</p>';
@@ -342,12 +346,34 @@ export function showSettings() {
     $$('[data-rm]').forEach((b) => { b.onclick = async () => { if (await confirmDialog('Remove mailbox?', 'This only removes it from this app on this device. Your mail isn’t touched.', { ok: 'Remove', danger: true })) { await svc.removeAccount(b.dataset.rm); renderAccts(); } }; });
     $$('[data-signin]').forEach((b) => { b.onclick = async () => { try { const r = await svc.reconnect([acctOf(b.dataset.signin)], { interactive: true }); toast(r.failed.length ? r.failed[0].error : 'Signed in'); renderAccts(); } catch (e) { showError(e); } }; });
   };
+  const renderUpgrade = () => {
+    const list = svc.accountsToUpgrade();
+    $('#upgradeCard').innerHTML = list.length ? `<div class="card" style="border-color:#2c3c5e;background:#141c2b"><h2>Stay signed in</h2>
+      <p>Your token helper is set up. Sign in once more to ${list.length === 1 ? esc(list[0].email) : `these ${list.length} mailboxes`} and they’ll stay signed in from then on.</p>
+      <div><button class="btn primary" id="upgradeBtn">Sign in once more</button></div></div>` : '';
+    $('#upgradeBtn')?.addEventListener('click', async () => {
+      try {
+        const r = await svc.reconnect(list, { interactive: true });
+        toast(r.failed.length ? `${r.ok.length} done, ${r.failed.length} failed: ${r.failed[0].error}` : 'All set. You’ll stay signed in.');
+        renderUpgrade(); renderAccts();
+      } catch (e) { showError(e); }
+    });
+  };
   renderAccts();
+  renderUpgrade();
+  $('#testHelper').onclick = async () => {
+    const url = $('#ids').tokenHelperUrl.value.trim();
+    if (!url) { toast('Paste the helper address first.'); return; }
+    try {
+      const h = await helperHealth(url);
+      toast(h.ok ? `Helper works. Google: ${h.google ? 'ready' : 'missing settings'} · Microsoft: ${h.microsoft ? 'ready' : 'missing settings'}` : 'Helper answered, but something is off.', { timeout: 9000 });
+    } catch { toast('Couldn’t reach the helper. Check the address and that this site is in ALLOWED_ORIGINS.', { timeout: 9000 }); }
+  };
   const add = (kind) => async () => { try { const a = await svc.addAccount(kind); toast(`Added ${a.email}`); renderAccts(); } catch (e) { showError(e); } };
   $('#addG').onclick = add('google');
   $('#addM').onclick = add('microsoft');
   $('#prefs').onchange = (e) => svc.saveSettings({ [e.target.name]: e.target.checked });
-  $('#ids').onsubmit = async (e) => { e.preventDefault(); await svc.saveSettings({ googleClientId: e.target.googleClientId.value.trim(), microsoftClientId: e.target.microsoftClientId.value.trim() }); toast('Saved'); };
+  $('#ids').onsubmit = async (e) => { e.preventDefault(); await svc.saveSettings({ googleClientId: e.target.googleClientId.value.trim(), microsoftClientId: e.target.microsoftClientId.value.trim(), tokenHelperUrl: e.target.tokenHelperUrl.value.trim() }); toast('Saved'); renderUpgrade(); };
   $('#wipe').onclick = async () => { if (await confirmDialog('Clear this device?', 'Removes all mailboxes, cached mail, rules and settings from this browser. Your actual mail isn’t touched.', { ok: 'Clear everything', danger: true })) svc.forgetEverything(); };
 }
 

@@ -1,0 +1,8 @@
+# Optional: only needed if you deploy with the `wrangler` command line tool.
+# The SETUP.md steps use the Cloudflare dashboard instead.
+name = "unified-inbox-tokens"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+ALLOWED_ORIGINS = "https://devilbike.github.io,http://localhost:8080"

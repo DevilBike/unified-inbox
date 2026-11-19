@@ -47,8 +47,19 @@ async function pkcePair() {
 }
 
 // Build one sign-in step. kind: 'google' | 'microsoft'. silent = prompt=none.
-export async function buildStep(kind, { clientId, loginHint, silent }) {
+// With a token helper, Google uses the code flow so it can hand out a refresh token.
+export async function buildStep(kind, { clientId, loginHint, silent, helper }) {
   const state = randomString(16);
+  if (kind === 'google' && helper) {
+    const { verifier, challenge } = await pkcePair();
+    const p = new URLSearchParams({
+      client_id: clientId, redirect_uri: redirectUri(), response_type: 'code', scope: GOOGLE_SCOPES.join(' '),
+      state, access_type: 'offline', include_granted_scopes: 'true', code_challenge: challenge, code_challenge_method: 'S256',
+      prompt: silent ? 'none' : 'consent select_account',
+    });
+    if (loginHint) p.set('login_hint', loginHint);
+    return { kind, state, verifier, helper: true, url: `https://accounts.google.com/o/oauth2/v2/auth?${p}` };
+  }
   if (kind === 'google') {
     const p = new URLSearchParams({
       client_id: clientId, redirect_uri: redirectUri(), response_type: 'token', scope: GOOGLE_SCOPES.join(' '),
@@ -64,7 +75,42 @@ export async function buildStep(kind, { clientId, loginHint, silent }) {
     prompt: silent ? 'none' : 'select_account',
   });
   if (loginHint) p.set('login_hint', loginHint);
-  return { kind, state, verifier, url: `${MS_AUTHORITY}/authorize?${p}` };
+  return { kind, state, verifier, helper: !!helper, url: `${MS_AUTHORITY}/authorize?${p}` };
+}
+
+// ----- token helper (Cloudflare Worker, see token-helper/) -----
+async function helperCall(helperUrl, path, body) {
+  let res;
+  try {
+    res = await fetch(`${helperUrl.replace(/\/+$/, '')}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch { throw new Error('Couldn’t reach the token helper. Check its address in Settings.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.error || `Token helper error (${res.status})`);
+  return data;
+}
+
+function helperToken(data, previousRefresh) {
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || previousRefresh,
+    expiresAt: Date.now() + (Number(data.expires_in || 3600) - 60) * 1000,
+    viaHelper: true,
+  };
+}
+
+export async function helperExchange(helperUrl, kind, step, params) {
+  const data = await helperCall(helperUrl, `/${kind}/token`, { code: params.code, code_verifier: step.verifier, redirect_uri: redirectUri() });
+  return helperToken(data);
+}
+
+export async function helperRefresh(helperUrl, kind, refreshToken) {
+  const data = await helperCall(helperUrl, `/${kind}/refresh`, { refresh_token: refreshToken });
+  return helperToken(data, refreshToken);
+}
+
+export async function helperHealth(helperUrl) {
+  const res = await fetch(`${helperUrl.replace(/\/+$/, '')}/health`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  return res.json();
 }
 
 // Must be called straight from a click (browsers block popups otherwise).

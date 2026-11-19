@@ -4,4 +4,7 @@
 export const CONFIG = {
   googleClientId: '',
   microsoftClientId: '',
+  // Optional: address of your token helper (Cloudflare Worker) so you stay signed in.
+  // e.g. 'https://unified-inbox-tokens.yourname.workers.dev'
+  tokenHelperUrl: '',
 };

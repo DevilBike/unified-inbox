@@ -18,6 +18,7 @@ One inbox for several Gmail and Outlook.com mailboxes, with shared folders and r
 - **Calendar:** the next 14 days across all calendars, new events, and Accept / Maybe / Decline on invites
 - **Contacts:** address books from all mailboxes, plus autocomplete when writing
 - **Safety:** remote images are blocked until you ask (this stops tracking pixels), emails are shown in a locked-down frame, and look-alike senders like "Canada Post" from a random domain get a warning
+- **Stay signed in:** an optional free Cloudflare Worker ([`token-helper/`](token-helper/)) renews sign-ins in the background. Without it, the app reconnects on your next tap
 - **Keyboard:** `J`/`K` next/previous, `E` archive, `#` delete, `R` reply, `A` reply all, `F` forward, `V` move, `H` snooze, `S` flag, `U` unread, `!` junk, `C` compose, `/` search
 
 ## How it's built
@@ -30,6 +31,7 @@ js/core/                     rules engine, importers, rule compiler, cleanup, MI
 js/providers/                Gmail (gmail.js) and Outlook (graph.js) adapters
 js/service.js                app state, accounts, sync, cleanup
 js/ui/                       screens
+token-helper/worker.js       optional sign-in renewal helper (Cloudflare Worker)
 tests/                       unit tests (npm test)
 ```
 
