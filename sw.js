@@ -1,6 +1,6 @@
 // Offline shell. Network first (so updates show up right away), cache as fallback.
 // Only this app's own files are cached; mail never goes through here.
-const CACHE = 'unified-inbox-v1';
+const CACHE = 'unified-inbox-0.3.0';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
@@ -10,7 +10,7 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
-  if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.endsWith('/auth.html')) return;
+  if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.endsWith('/auth.html') || url.pathname.endsWith('/version.json')) return;
   e.respondWith((async () => {
     try {
       const res = await fetch(req);

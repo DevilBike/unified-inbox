@@ -1,0 +1,9 @@
+{
+  "version": "0.3.0",
+  "date": "2026-11-19",
+  "changes": [
+    "Update button: the app tells you when a new version is out and installs it with one tap",
+    "Notes for Claude: jot down bugs and ideas, then send them to GitHub for the next round of changes",
+    "Stay signed in: reconnect on your next tap, plus the optional token helper"
+  ]
+}

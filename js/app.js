@@ -3,6 +3,8 @@ import * as svc from './service.js';
 import { MAIL_VIEWS, mail, showMail, refresh, handleMailKey, shortName } from './ui/mail.js';
 import { showCalendar, showContacts, showRules, showCleanup, showSettings } from './ui/pages.js';
 import { openCompose } from './ui/compose.js';
+import { showNotes } from './ui/notes.js';
+import { checkForUpdate, installUpdate, setRegistration } from './update.js';
 
 const app = $('#app');
 
@@ -35,6 +37,7 @@ function renderNav() {
       ${item('#/contacts', 'Contacts', r.section === 'contacts', 'contacts')}
       ${item('#/rules', 'Rules & import', r.section === 'rules', 'rules')}
       ${item('#/cleanup', 'Clean up', r.section === 'cleanup', 'cleanup')}
+      ${item('#/notes', 'Notes for Claude', r.section === 'notes', 'drafts')}
       ${item('#/settings', 'Settings', r.section === 'settings', 'settings')}
     </div>
     <div class="shortcuts"><div><b>J / K</b> next · prev</div><div><b>E</b> archive · <b>R</b> reply · <b>#</b> delete</div><div><b>V</b> move · <b>H</b> snooze · <b>S</b> flag</div><div><b>C</b> compose · <b>/</b> search</div></div>`;
@@ -56,6 +59,7 @@ async function render() {
     else if (r.section === 'rules') showRules();
     else if (r.section === 'cleanup') await showCleanup();
     else if (r.section === 'settings') showSettings();
+    else if (r.section === 'notes') await showNotes(r.params);
     else location.hash = '#/mail/inbox';
   } catch (e) { showError(e); }
 }
@@ -65,7 +69,8 @@ function updateReconnect() {
   const need = svc.accountsNeedingSignIn();
   const btn = $('#reconnectBtn');
   btn.hidden = !need.length;
-  btn.textContent = need.length === 1 ? `Reconnect ${shortName(need[0])}` : `Reconnect ${need.length} mailboxes`;
+  const phone = window.matchMedia('(max-width: 860px)').matches;
+  btn.textContent = phone ? `Reconnect${need.length > 1 ? ` (${need.length})` : ''}` : need.length === 1 ? `Reconnect ${shortName(need[0])}` : `Reconnect ${need.length} mailboxes`;
 }
 
 $('#reconnectBtn').onclick = async () => {
@@ -136,6 +141,20 @@ svc.subscribe((event, data) => {
 
 window.addEventListener('hashchange', render);
 
+// ---------- app updates ----------
+export async function refreshUpdateChip() {
+  const u = await checkForUpdate();
+  const btn = $('#updateBtn');
+  btn.hidden = !u.available;
+  if (u.available) btn.textContent = window.matchMedia('(max-width: 860px)').matches ? 'Update' : `Update to ${u.latest}`;
+  return u;
+}
+$('#updateBtn').onclick = async () => {
+  $('#updateBtn').disabled = true;
+  $('#updateBtn').textContent = 'Updating…';
+  await installUpdate();
+};
+
 // Refresh the open mail view every minute; snoozes and contacts less often.
 let lastSnooze = 0;
 async function tick() {
@@ -158,5 +177,8 @@ async function tick() {
   setInterval(tick, 60000);
   setTimeout(tick, 3000);
   svc.refreshContacts().catch(() => {});
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(setRegistration).catch(() => {});
+  refreshUpdateChip();
+  setInterval(refreshUpdateChip, 30 * 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshUpdateChip(); });
 })();

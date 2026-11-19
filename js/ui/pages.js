@@ -3,6 +3,7 @@ import * as svc from '../service.js';
 import { TARGET_FOLDERS, folderName } from '../core/folders.js';
 import { normalizeRule, describeMatch, isCheckableHere } from '../core/rules.js';
 import { helperHealth } from '../auth.js';
+import { checkForUpdate, installUpdate, APP_VERSION } from '../update.js';
 import { gmailXmlToRules, parseRulesJson, exportRulesJson, mergeRules } from '../core/importers.js';
 import { BUCKET_STAY, BUCKET_TRASH } from '../core/cleanup.js';
 import { openCompose } from './compose.js';
@@ -331,6 +332,9 @@ export function showSettings() {
       <label class="field">Token helper address <span class="muted" style="font-size:12px">(optional, keeps you signed in)</span><input class="input" name="tokenHelperUrl" value="${esc(s.tokenHelperUrl || '')}" placeholder="https://unified-inbox-tokens.yourname.workers.dev"></label>
       <p style="font-size:12px">Sign-in return address to register: <code>${esc(new URL('auth.html', location.href.split('#')[0]).href)}</code></p>
       <div style="display:flex;gap:8px"><button class="btn">Save</button><button type="button" class="btn" id="testHelper">Test helper</button></div></form>
+    <div class="card"><h2>App version</h2><p>You have version <strong>${esc(APP_VERSION)}</strong>.</p>
+      <div id="updInfo"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="checkUpd">Check for updates</button><a class="btn" href="#/notes">Notes for Claude</a></div></div>
     <div class="card"><h2>This device</h2><p>Mail, rules and sign-ins are stored only in this browser. Export your rules before clearing.</p>
       <div><button class="btn danger" id="wipe">Sign out everywhere and clear this device</button></div></div>
   </aside></div>`;
@@ -361,6 +365,16 @@ export function showSettings() {
   };
   renderAccts();
   renderUpgrade();
+  $('#checkUpd').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Checking…';
+    const u = await checkForUpdate();
+    e.target.disabled = false; e.target.textContent = 'Check for updates';
+    if (u.offline) { toast('Couldn’t check. Are you online?'); return; }
+    $('#updInfo').innerHTML = u.available
+      ? `<div class="banner info" style="flex-direction:column;align-items:flex-start"><strong>Version ${esc(u.latest)} is ready.</strong>${u.changes.length ? `<ul style="margin:4px 0 0;padding-left:18px">${u.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}<button class="btn small primary" id="doUpd" style="margin-top:6px">Update now</button></div>`
+      : '<p style="color:var(--good)">You’re on the latest version.</p>';
+    $('#doUpd')?.addEventListener('click', (ev) => { ev.target.disabled = true; ev.target.textContent = 'Updating…'; installUpdate(); });
+  };
   $('#testHelper').onclick = async () => {
     const url = $('#ids').tokenHelperUrl.value.trim();
     if (!url) { toast('Paste the helper address first.'); return; }
