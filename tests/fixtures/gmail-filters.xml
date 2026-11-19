@@ -1,0 +1,64 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns='http://www.w3.org/2005/Atom' xmlns:apps='http://schemas.google.com/apps/2006'>
+  <title>Mail Filters</title>
+
+  <!-- RECEIPTS: orders, shipping, payments, subscription renewals -->
+  <entry>
+    <category term='filter'></category>
+    <title>Mail Filter</title>
+    <content></content>
+    <apps:property name='hasTheWord' value='from:(auto-confirm@amazon.com OR shipment-tracking@amazon.com OR order-update@amazon.com OR digital-no-reply@amazon.com OR googleplay-noreply@google.com OR service@paypal.com OR torbox.app OR aliexpress.com OR ebay@ebay.com) OR subject:(receipt OR invoice OR &quot;order confirmation&quot; OR &quot;your order&quot; OR &quot;payment confirmed&quot; OR &quot;has shipped&quot; OR &quot;subscription renewed&quot;)'/>
+    <apps:property name='label' value='Receipts'/>
+    <apps:property name='shouldArchive' value='true'/>
+    <apps:property name='sizeOperator' value='s_sl'/>
+    <apps:property name='sizeUnit' value='s_smb'/>
+  </entry>
+
+  <!-- FINANCE: bank/utility statements, pay stubs -->
+  <entry>
+    <category term='filter'></category>
+    <title>Mail Filter</title>
+    <content></content>
+    <apps:property name='hasTheWord' value='from:(no.reply.alerts@chase.com OR noreply@service.paypal.com OR gexaemail.com OR paperlessemployee.com) OR subject:(&quot;statement is available&quot; OR &quot;statement is now available&quot; OR &quot;pay statement&quot; OR &quot;bill is ready&quot;)'/>
+    <apps:property name='label' value='Finance'/>
+    <apps:property name='shouldArchive' value='true'/>
+    <apps:property name='sizeOperator' value='s_sl'/>
+    <apps:property name='sizeUnit' value='s_smb'/>
+  </entry>
+
+  <!-- JOBS: job boards and recruiter blasts -->
+  <entry>
+    <category term='filter'></category>
+    <title>Mail Filter</title>
+    <content></content>
+    <apps:property name='hasTheWord' value='from:(ziprecruiter.com OR ihire.com OR indeed.com OR jobs-noreply@linkedin.com OR jobalerts-noreply@linkedin.com)'/>
+    <apps:property name='label' value='Jobs'/>
+    <apps:property name='shouldArchive' value='true'/>
+    <apps:property name='sizeOperator' value='s_sl'/>
+    <apps:property name='sizeUnit' value='s_smb'/>
+  </entry>
+
+  <!-- NEWS & SOCIAL -->
+  <entry>
+    <category term='filter'></category>
+    <title>Mail Filter</title>
+    <content></content>
+    <apps:property name='hasTheWord' value='from:(nytimes.com OR redditmail.com OR service.tiktok.com OR mailer.last.fm)'/>
+    <apps:property name='label' value='News'/>
+    <apps:property name='shouldArchive' value='true'/>
+    <apps:property name='sizeOperator' value='s_sl'/>
+    <apps:property name='sizeUnit' value='s_smb'/>
+  </entry>
+
+  <!-- PROMOTIONS: anything Gmail already flags as promotional -->
+  <entry>
+    <category term='filter'></category>
+    <title>Mail Filter</title>
+    <content></content>
+    <apps:property name='hasTheWord' value='category:promotions'/>
+    <apps:property name='label' value='Promotions'/>
+    <apps:property name='shouldArchive' value='true'/>
+    <apps:property name='sizeOperator' value='s_sl'/>
+    <apps:property name='sizeUnit' value='s_smb'/>
+  </entry>
+</feed>
