@@ -158,3 +158,26 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
   .event .when { flex-basis: 80px; }
 }
 @media (min-width: 861px) { .menu-btn { display: none; } }
+
+/* cleanup review */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.tab { background: none; border: 1px solid var(--line); color: var(--text-2); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.tab:hover { border-color: var(--line-2); color: var(--text); }
+.tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tab.active .count { color: var(--accent-ink); }
+.rv-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; max-height: 60vh; overflow-y: auto; }
+.rv-group + .rv-group, .rv-list > .rv-row + .rv-row { border-top: 1px solid #1C2029; }
+.rv-row { display: flex; gap: 8px; align-items: center; padding: 6px 8px; }
+.rv-children { padding: 0 0 6px 22px; border-top: 1px dashed #1C2029; }
+.rv-main { flex: 1; min-width: 0; display: flex; gap: 10px; align-items: baseline; background: none; border: 0; color: var(--text); font: inherit; font-size: 13px; text-align: left; padding: 6px; border-radius: 8px; cursor: pointer; }
+.rv-main:hover { background: var(--surface); }
+.rv-who { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 38%; display: inline-flex; gap: 6px; align-items: baseline; }
+.rv-subj { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+.rv-meta { white-space: nowrap; font-size: 12px; }
+.input.dest { width: 160px; height: 30px; padding: 0 8px; font-size: 13px; flex: none; }
+dialog.wide { width: min(1100px, calc(100vw - 24px)); height: calc(100vh - 48px); }
+dialog.wide .dlg.review { height: 100%; box-sizing: border-box; }
+.review-dest { display: flex; gap: 6px; flex-wrap: wrap; }
+.review-body { border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.offline { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #2b1a16; border: 1px solid #6b3328; color: #FFB4A3; padding: 12px 16px; border-radius: 10px; font-size: 14px; z-index: 50; max-width: calc(100vw - 40px); }

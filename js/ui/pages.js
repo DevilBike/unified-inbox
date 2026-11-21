@@ -1,13 +1,12 @@
-import { $, $$, esc, toast, showError, openDialog, confirmDialog, fullTime, icon } from './dom.js';
+import { $, $$, esc, toast, showError, openDialog, confirmDialog, fullTime, timeLabel, icon } from './dom.js';
 import * as svc from '../service.js';
 import { TARGET_FOLDERS, folderName } from '../core/folders.js';
 import { normalizeRule, describeMatch, isCheckableHere } from '../core/rules.js';
-import { helperHealth } from '../auth.js';
 import { checkForUpdate, installUpdate, APP_VERSION } from '../update.js';
 import { gmailXmlToRules, parseRulesJson, exportRulesJson, mergeRules } from '../core/importers.js';
 import { BUCKET_STAY, BUCKET_TRASH } from '../core/cleanup.js';
-import { openCompose } from './compose.js';
-import { shortName } from './mail.js';
+import { shortName, pickFolder } from './mail.js';
+import { renderMessage } from './message.js';
 
 const main = () => $('#main');
 const acctOf = (id) => svc.state.accounts.find((a) => a.id === id);
@@ -17,73 +16,6 @@ function page(title, actions = '') {
   return $('#pageBody');
 }
 const noAccounts = '<div class="card"><p>No mailboxes yet. <a href="#/settings">Add one in Settings</a>.</p></div>';
-
-// ================= Calendar =================
-export async function showCalendar() {
-  const body = page('Calendar', '<button class="btn primary" id="newEvent">New event</button>');
-  $('#newEvent').onclick = () => newEvent().then((ok) => ok && showCalendar());
-  if (!svc.state.accounts.length) { body.innerHTML = noAccounts; return; }
-  body.innerHTML = '<p class="muted">Loading the next 14 days…</p>';
-  const { events, errors } = await svc.loadEvents(14);
-  errors.forEach((e) => toast(`${e.account.email}: ${e.error.message}`));
-  if (!events.length) { body.innerHTML = '<div class="card"><p>Nothing on your calendars in the next 14 days.</p></div>'; return; }
-  const byDay = new Map();
-  for (const ev of events) {
-    const k = new Date(ev.start).toDateString();
-    if (!byDay.has(k)) byDay.set(k, []);
-    byDay.get(k).push(ev);
-  }
-  const resp = { accepted: '', tentative: 'Maybe', declined: 'Declined', needsAction: 'Not answered', none: '', organizer: '' };
-  body.innerHTML = [...byDay.entries()].map(([day, list]) => `<div class="day">${esc(new Date(day).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }))}</div>
-    ${list.map((ev) => { const a = acctOf(ev.accountId); return `<div class="event"><span class="bar" style="background:${esc(a?.color)}"></span>
-      <span class="when">${ev.allDay ? 'All day' : `${esc(new Date(ev.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}–${esc(new Date(ev.end).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}`}</span>
-      <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><span style="font-weight:600">${esc(ev.title)}</span>
-      <span class="muted" style="font-size:12px">${esc([ev.location, a?.email, resp[ev.response]].filter(Boolean).join(' · '))}</span></span>
-      ${ev.link ? `<a class="btn small" href="${esc(ev.link)}" target="_blank" rel="noopener">Open</a>` : ''}</div>`; }).join('')}`).join('');
-}
-
-function newEvent() {
-  return openDialog((d, close) => {
-    const start = new Date(Date.now() + 3600000); start.setMinutes(0, 0, 0);
-    const local = (t) => new Date(t - new Date(t).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-    d.innerHTML = `<form class="dlg"><header><h2>New event</h2></header>
-      <label class="field">Calendar<select class="input" name="acct">${svc.state.accounts.map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`).join('')}</select></label>
-      <label class="field">Title<input class="input" name="title" required autofocus></label>
-      <div class="cols" style="gap:12px"><label class="field" style="flex:1">Starts<input class="input" type="datetime-local" name="start" value="${local(start.getTime())}" required></label>
-      <label class="field" style="flex:1">Ends<input class="input" type="datetime-local" name="end" value="${local(start.getTime() + 3600000)}" required></label></div>
-      <label class="field">Location<input class="input" name="location"></label>
-      <label class="field">Notes<textarea class="input" name="notes" rows="3"></textarea></label>
-      <footer><button type="button" class="btn" data-x>Cancel</button><button class="btn primary">Save</button></footer></form>`;
-    const f = d.querySelector('form');
-    d.querySelector('[data-x]').onclick = () => close(false);
-    f.onsubmit = async (e) => {
-      e.preventDefault();
-      const s = new Date(f.start.value).getTime(), en = new Date(f.end.value).getTime();
-      if (!f.title.value.trim()) { toast('Add a title.'); return; }
-      if (!(en > s)) { toast('The end has to be after the start.'); return; }
-      try { await svc.createEvent(f.acct.value, { title: f.title.value.trim(), start: s, end: en, location: f.location.value, description: f.notes.value }); toast('Event saved'); close(true); } catch (err) { showError(err); }
-    };
-  });
-}
-
-// ================= Contacts =================
-export async function showContacts() {
-  const body = page('Contacts', '<button class="btn" id="syncContacts">Refresh</button>');
-  $('#syncContacts').onclick = async () => { toast('Refreshing contacts…'); await svc.refreshContacts(true); showContacts(); };
-  const all = await svc.allContacts();
-  body.innerHTML = `<label class="field" style="max-width:420px;margin-bottom:14px">Find someone<input class="input" id="cq" placeholder="Name or email"></label><div id="clist"></div>`;
-  const render = (q = '') => {
-    const t = q.toLowerCase();
-    const seen = new Set();
-    const list = all.filter((c) => (!t || c.email.includes(t) || (c.name || '').toLowerCase().includes(t)) && !seen.has(c.email) && seen.add(c.email)).slice(0, 300);
-    $('#clist').innerHTML = list.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th></th></tr></thead><tbody>
-      ${list.map((c) => `<tr><td>${esc(c.name || '—')}</td><td>${esc(c.email)}</td><td style="text-align:right"><button class="btn small" data-mail="${esc(c.email)}" data-name="${esc(c.name || '')}">Email</button></td></tr>`).join('')}</tbody></table></div>`
-      : '<div class="card"><p>No contacts yet. They’re pulled from your mailboxes’ address books and from people you email.</p></div>';
-    $$('[data-mail]').forEach((b) => { b.onclick = () => openCompose({ to: [{ name: b.dataset.name, address: b.dataset.mail }] }); });
-  };
-  $('#cq').oninput = (e) => render(e.target.value);
-  render();
-}
 
 // ================= Rules & import =================
 export function showRules() {
@@ -217,7 +149,10 @@ function editRule(index) {
 }
 
 // ================= Cleanup =================
-const BUCKET_LABEL = (k) => (k === BUCKET_TRASH ? 'Promotions → Trash' : k === BUCKET_STAY ? 'Stays in Inbox' : folderName(k));
+const DESTS = () => [{ key: BUCKET_STAY, name: 'Leave in Inbox', short: 'Inbox' }, ...TARGET_FOLDERS.map((f) => ({ key: f.key, name: f.name, short: f.name })), { key: BUCKET_TRASH, name: 'Trash', short: 'Trash' }];
+const BUCKET_LABEL = (k) => (k === BUCKET_TRASH ? 'Trash' : k === BUCKET_STAY ? 'Stays in Inbox' : folderName(k));
+const bucketOrder = (keys) => keys.sort((a, b) => (a === BUCKET_STAY) - (b === BUCKET_STAY) || (a === BUCKET_TRASH) - (b === BUCKET_TRASH)
+  || DESTS().findIndex((d) => d.key === a) - DESTS().findIndex((d) => d.key === b));
 
 export async function showCleanup() {
   const body = page('Clean up inboxes');
@@ -225,9 +160,9 @@ export async function showCleanup() {
   const runs = await svc.cleanupRuns();
   body.innerHTML = `<div class="cols"><section class="col-main">
     <form class="card" id="cleanForm"><h2>1. Choose what to clean</h2>
-      <p>Runs your rules over mail already in your inboxes. You’ll see exactly what will happen before anything moves.</p>
+      <p>Runs your rules over mail already in your inboxes. Then you can read and re-sort anything before a single message moves.</p>
       <fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px"><legend style="font-size:13px;color:var(--text-2);margin-bottom:6px">Mailboxes</legend>
-        ${svc.state.accounts.map((a) => `<label class="check"><input type="checkbox" name="acct" value="${esc(a.id)}" checked> ${esc(a.email)}</label>`).join('')}</fieldset>
+        ${svc.state.accounts.map((a) => `<label class="check"><input type="checkbox" name="acct" value="${esc(a.id)}" ${a.status === 'ok' ? 'checked' : 'disabled'}> ${esc(a.email)}${a.status === 'ok' ? '' : ' <span style="color:var(--warn)">(sign in again in Settings)</span>'}</label>`).join('')}</fieldset>
       <label class="field">How far back<select class="input" name="range" style="max-width:260px"><option value="30d">Last 30 days</option><option value="90d" selected>Last 90 days</option><option value="1y">Last year</option><option value="all">Everything</option></select></label>
       <label class="check"><input type="checkbox" name="trash"> Send promotions to Trash instead of the Promotions folder <span class="muted">(Trash keeps them about 30 days)</span></label>
       <div><button class="btn primary">Preview cleanup</button></div>
@@ -236,7 +171,8 @@ export async function showCleanup() {
   </section>
   <aside class="col-side"><div class="card"><h2>Past cleanups</h2>${runs.length ? runs.map((r) => `<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;font-size:13px;border-top:1px solid var(--line);padding-top:10px">
       <span>${esc(fullTime(r.at))}<br><span class="muted">${esc(Object.entries(r.counts).map(([k, n]) => `${n} ${BUCKET_LABEL(k)}`).join(' · '))}</span></span>
-      ${r.undone ? '<span class="muted">Undone</span>' : `<button class="btn small" data-undo="${esc(r.runId)}">Undo</button>`}</div>`).join('') : '<p>None yet.</p>'}</div></aside></div>`;
+      ${r.undone ? '<span class="muted">Undone</span>' : `<button class="btn small" data-undo="${esc(r.runId)}">Undo</button>`}</div>`).join('') : '<p>None yet.</p>'}
+      <p style="font-size:12px">Every move is logged on this PC, so a cleanup can be undone later.</p></div></aside></div>`;
   $$('[data-undo]').forEach((b) => { b.onclick = () => undoRun(b.dataset.undo); });
   $('#cleanForm').onsubmit = async (e) => {
     e.preventDefault();
@@ -256,29 +192,141 @@ export async function showCleanup() {
   };
 }
 
+const destSelect = (attr, value) => `<select class="input dest" ${attr} aria-label="Where it goes">${DESTS().map((d) => `<option value="${d.key}" ${d.key === value ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>`;
+
+function groupBySender(list) {
+  const map = new Map();
+  for (const m of list) {
+    const addr = (m.from?.address || '').toLowerCase() || '(no address)';
+    if (!map.has(addr)) map.set(addr, { addr, name: m.from?.name || '', msgs: [] });
+    map.get(addr).msgs.push(m);
+  }
+  return [...map.values()].sort((a, b) => b.msgs.length - a.msgs.length || a.addr.localeCompare(b.addr));
+}
+
 function renderPreview(plan) {
-  const excluded = new Set();
+  const st = { overrides: new Map(), tab: null, group: true, shown: 60, open: new Set() };
+  const ruleBucket = new Map(plan.accounts.flatMap((a) => Object.entries(a.buckets).flatMap(([k, l]) => l.map((m) => [m.key, k]))));
   const stage = $('#cleanStage');
-  const buckets = Object.keys(plan.totals).sort((a, b) => (a === BUCKET_STAY) - (b === BUCKET_STAY) || (a === BUCKET_TRASH) - (b === BUCKET_TRASH));
-  const moving = () => Object.entries(plan.totals).filter(([k]) => k !== BUCKET_STAY).reduce((n, [, v]) => n + v, 0) - excluded.size;
-  stage.innerHTML = `<div class="card"><h2>2. Review</h2><p>Nothing has changed yet. Untick anything you want left where it is.</p>
-    <div class="table-wrap"><table class="table"><thead><tr><th>Mailbox</th>${buckets.map((b) => `<th>${esc(BUCKET_LABEL(b))}</th>`).join('')}</tr></thead><tbody>
-      ${plan.accounts.map((a) => `<tr><td>${esc(a.email)}</td>${buckets.map((b) => `<td>${(a.buckets[b] || []).length}</td>`).join('')}</tr>`).join('')}
-      <tr><td style="font-weight:600">Total</td>${buckets.map((b) => `<td style="font-weight:600">${plan.totals[b]}</td>`).join('')}</tr></tbody></table></div>
-    ${buckets.filter((b) => b !== BUCKET_STAY).map((b) => {
-      const list = plan.accounts.flatMap((a) => (a.buckets[b] || []).map((m) => ({ ...m, email: a.email })));
-      return `<details><summary style="cursor:pointer">${esc(BUCKET_LABEL(b))} — ${list.length} messages</summary><div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;max-height:320px;overflow-y:auto">
-        ${list.slice(0, 200).map((m) => `<label class="check" style="font-size:13px"><input type="checkbox" checked data-key="${esc(m.key)}"> <span style="min-width:0"><strong>${esc(m.from?.name || m.from?.address)}</strong> — ${esc(m.subject)} <span class="muted">· ${esc(m.email)}</span></span></label>`).join('')}
-        ${list.length > 200 ? `<p class="muted" style="font-size:12px">…and ${list.length - 200} more</p>` : ''}</div></details>`;
-    }).join('')}
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn primary" id="runClean">Move <span id="moveCount">${moving()}</span> messages</button><span class="muted" style="font-size:13px">You can undo this afterwards.</span></div></div>`;
-  $$('[data-key]', stage).forEach((cb) => { cb.onchange = () => { if (cb.checked) excluded.delete(cb.dataset.key); else excluded.add(cb.dataset.key); $('#moveCount').textContent = moving(); }; });
-  $('#runClean').onclick = async () => {
-    const final = svc.excludeFromPlan(plan, [...excluded]);
-    const trashN = final.totals[BUCKET_TRASH] || 0;
-    const ok = await confirmDialog('Run cleanup?', `${moving()} messages will be moved${trashN ? `, including <strong>${trashN} to Trash</strong>` : ''}. You can undo it from “Past cleanups”.`, { ok: 'Run cleanup', danger: trashN > 0 });
-    if (ok) runPlan(final);
+  const current = () => svc.reassignInPlan(plan, st.overrides);
+  const setMany = (keys, bucket) => { for (const k of keys) st.overrides.set(k, bucket); };
+
+  const alwaysForSender = async (addr) => {
+    const to = await pickFolder('', `Always put mail from ${addr} in`);
+    if (!to) return;
+    await svc.fileSenderAlways(addr, to);
+    setMany(svc.keysFromSender(plan, addr), svc.bucketForFolder(plan, to));
+    toast(to === 'inbox' ? `${addr} stays in the Inbox` : `Rule saved: ${addr} → ${folderName(to)}`);
+    draw();
   };
+
+  const draw = () => {
+    const p = current();
+    const buckets = bucketOrder(Object.keys(p.totals));
+    if (!st.tab || !p.totals[st.tab]) st.tab = buckets.find((b) => b !== BUCKET_STAY) || buckets[0];
+    const moving = Object.entries(p.totals).filter(([k]) => k !== BUCKET_STAY).reduce((n, [, v]) => n + v, 0);
+    const trashN = p.totals[BUCKET_TRASH] || 0;
+    const list = p.accounts.flatMap((a) => (a.buckets[st.tab] || []).map((m) => ({ ...m, mailbox: a.email })));
+    const keys = list.map((m) => m.key);
+    const msgRow = (m) => `<div class="rv-row"><button class="rv-main" data-read="${esc(m.key)}" title="Read this message">
+        <span class="rv-who">${esc(m.from?.name || m.from?.address || '')}</span><span class="rv-subj">${esc(m.subject || '(no subject)')}</span>
+        <span class="muted rv-meta">${esc(shortName(acctOf(m.accountId)))} · ${esc(timeLabel(m.date))}</span></button>
+        ${destSelect(`data-sel="${esc(m.key)}"`, st.tab)}</div>`;
+    let rows;
+    if (st.group) {
+      const groups = groupBySender(list);
+      rows = groups.slice(0, st.shown).map((g, i) => `<div class="rv-group">
+        <div class="rv-row"><button class="rv-main" data-toggle-group="${i}" aria-expanded="${st.open.has(g.addr)}">
+          <span class="rv-who">${st.open.has(g.addr) ? '▾' : '▸'} ${esc(g.name || g.addr)} <span class="count">${g.msgs.length}</span></span>
+          <span class="rv-subj muted">${esc(g.name ? g.addr : '')}${g.name ? ' · ' : ''}${esc(g.msgs[0].subject || '')}</span></button>
+          ${destSelect(`data-gsel="${i}"`, st.tab)}<button class="btn small" data-galways="${i}" title="Make a rule for this sender">Always…</button></div>
+        ${st.open.has(g.addr) ? `<div class="rv-children">${g.msgs.slice(0, 100).map(msgRow).join('')}${g.msgs.length > 100 ? `<p class="muted" style="font-size:12px">…and ${g.msgs.length - 100} more</p>` : ''}</div>` : ''}</div>`).join('');
+      if (groups.length > st.shown) rows += `<div style="padding:8px"><button class="btn small" id="showMore">Show more senders (${groups.length - st.shown} left)</button></div>`;
+      stage._groups = groups;
+    } else {
+      rows = list.slice(0, st.shown).map(msgRow).join('');
+      if (list.length > st.shown) rows += `<div style="padding:8px"><button class="btn small" id="showMore">Show more (${list.length - st.shown} left)</button></div>`;
+    }
+    stage.innerHTML = `<div class="card"><h2>2. Review and sort</h2>
+      <p>Nothing has changed yet. Open any message to read it, then send it somewhere else, or change a whole sender at once.</p>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Mailbox</th>${buckets.map((b) => `<th>${esc(BUCKET_LABEL(b))}</th>`).join('')}</tr></thead><tbody>
+        ${p.accounts.map((a) => `<tr><td>${esc(a.email)}</td>${buckets.map((b) => `<td>${(a.buckets[b] || []).length}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <div class="tabs" role="tablist">${buckets.map((b) => `<button class="tab ${b === st.tab ? 'active' : ''}" role="tab" aria-selected="${b === st.tab}" data-tab="${b}">${esc(BUCKET_LABEL(b))} <span class="count">${p.totals[b]}</span></button>`).join('')}</div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label class="check"><input type="checkbox" id="groupToggle" ${st.group ? 'checked' : ''}> Group by sender</label>
+        <button class="btn small" id="readAll">Read through these ${list.length} one by one</button></div>
+      <div class="rv-list">${rows || '<p class="muted">Nothing here.</p>'}</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn primary" id="runClean" ${moving ? '' : 'disabled'}>Move ${moving} messages</button>
+        <span class="muted" style="font-size:13px">${trashN ? `${trashN} go to Trash. ` : ''}You can undo this afterwards.</span></div></div>`;
+
+    $$('[data-tab]', stage).forEach((b) => { b.onclick = () => { st.tab = b.dataset.tab; st.shown = 60; draw(); }; });
+    $('#groupToggle').onchange = (e) => { st.group = e.target.checked; st.shown = 60; draw(); };
+    $('#showMore')?.addEventListener('click', () => { st.shown += 60; draw(); });
+    $$('[data-sel]', stage).forEach((sel) => { sel.onchange = () => { st.overrides.set(sel.dataset.sel, sel.value); draw(); }; });
+    $$('[data-gsel]', stage).forEach((sel) => { sel.onchange = () => { setMany(stage._groups[Number(sel.dataset.gsel)].msgs.map((m) => m.key), sel.value); draw(); }; });
+    $$('[data-galways]', stage).forEach((b) => { b.onclick = () => alwaysForSender(stage._groups[Number(b.dataset.galways)].addr); });
+    $$('[data-toggle-group]', stage).forEach((b) => { b.onclick = () => { const g = stage._groups[Number(b.dataset.toggleGroup)]; if (st.open.has(g.addr)) st.open.delete(g.addr); else st.open.add(g.addr); draw(); }; });
+    const msgByKey = new Map(list.map((m) => [m.key, m]));
+    $$('[data-read]', stage).forEach((b) => { b.onclick = () => reviewOneByOne(keys, keys.indexOf(b.dataset.read), msgByKey).then(draw); });
+    $('#readAll').onclick = () => { if (keys.length) reviewOneByOne(keys, 0, msgByKey).then(draw); };
+    $('#runClean').onclick = async () => {
+      const final = current();
+      const ok = await confirmDialog('Run cleanup?', `${moving} messages will be moved${trashN ? `, including <strong>${trashN} to Trash</strong>` : ''}. You can undo it from “Past cleanups”.`, { ok: 'Run cleanup', danger: trashN > 0 });
+      if (ok) runPlan(final);
+    };
+  };
+
+  // Read messages one at a time and pick where each goes (number keys), J/K to step.
+  function reviewOneByOne(keys, start, msgByKey) {
+    const dests = DESTS();
+    const d = $('#dialog');
+    d.classList.add('wide');
+    return openDialog((dlg, close) => {
+      let i = Math.max(0, start);
+      let token = 0;
+      const bucketNow = (key) => st.overrides.get(key) || ruleBucket.get(key);
+      const show = async () => {
+        const key = keys[i];
+        const m = msgByKey.get(key);
+        const b = bucketNow(key);
+        const my = ++token;
+        dlg.innerHTML = `<div class="dlg review"><header><h2>${i + 1} of ${keys.length}</h2><button class="btn small" data-x>Done</button></header>
+          <div class="review-dest" role="group" aria-label="Send this message to">${dests.map((o, n) => `<button class="btn small ${o.key === b ? 'primary' : ''}" data-dest="${o.key}" aria-pressed="${o.key === b}">${esc(o.short)} <span class="kbd">${n + 1}</span></button>`).join('')}</div>
+          <label class="check" style="font-size:13px"><input type="checkbox" data-always> Do the same for everything from ${esc(m.from?.address || 'this sender')} and add a rule</label>
+          <div class="reader-body review-body" id="rvBody"><p class="muted">Loading…</p></div>
+          <footer><button class="btn" data-prev ${i ? '' : 'disabled'}>← Previous <span class="kbd">K</span></button><button class="btn" data-next>${i < keys.length - 1 ? 'Next' : 'Finish'} → <span class="kbd">J</span></button></footer></div>`;
+        dlg.querySelector('[data-x]').onclick = () => close();
+        dlg.querySelector('[data-prev]').onclick = () => go(-1);
+        dlg.querySelector('[data-next]').onclick = () => go(1);
+        dlg.querySelectorAll('[data-dest]').forEach((btn) => { btn.onclick = () => choose(btn.dataset.dest); });
+        try {
+          const full = await svc.openMessage(m, { markRead: false });
+          if (my === token) renderMessage($('#rvBody'), full);
+        } catch (e) { if (my === token) $('#rvBody').innerHTML = `<p class="muted">Couldn’t open this message. ${esc(e.message)}</p>`; }
+      };
+      const go = (step) => { const n = i + step; if (n < 0) return; if (n >= keys.length) { close(); return; } i = n; show(); };
+      const choose = async (dest) => {
+        const m = msgByKey.get(keys[i]);
+        const always = dlg.querySelector('[data-always]')?.checked;
+        if (always && m.from?.address) {
+          if (dest === BUCKET_TRASH) { toast('A rule can’t delete mail. Pick Promotions for the rule, or untick the box.'); return; }
+          await svc.fileSenderAlways(m.from.address, dest === BUCKET_STAY ? 'inbox' : dest);
+          setMany(svc.keysFromSender(plan, m.from.address), dest === BUCKET_STAY ? BUCKET_STAY : svc.bucketForFolder(plan, dest));
+          toast(dest === BUCKET_STAY ? `${m.from.address} stays in the Inbox` : `Rule saved: ${m.from.address} → ${folderName(dest)}`);
+        }
+        st.overrides.set(keys[i], dest);
+        go(1);
+      };
+      dlg.addEventListener('keydown', (e) => {
+        if (e.target.closest('input[type="text"], textarea')) return;
+        const n = Number(e.key);
+        if (n >= 1 && n <= dests.length) { e.preventDefault(); choose(dests[n - 1].key); } else if (e.key === 'j' || e.key === 'ArrowRight') { e.preventDefault(); go(1); } else if (e.key === 'k' || e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+      });
+      show();
+    }).finally(() => d.classList.remove('wide'));
+  }
+
+  draw();
 }
 
 async function runPlan(plan) {
@@ -293,9 +341,13 @@ async function runPlan(plan) {
     }, () => cancelled);
     stage.innerHTML = `<div class="card" style="border-color:#2E5E52;background:#11201C"><h2 style="color:var(--good)">${res.cancelled ? 'Stopped' : 'Done'}</h2>
       <p>${res.done} of ${res.total} messages handled.${res.errors.length ? ` ${res.errors.reduce((n, e) => n + e.count, 0)} couldn’t be moved: ${esc(res.errors[0].message)}` : ''}</p>
+      <p style="font-size:13px">Any “Always…” rules you made are saved. Use “Apply to Gmail & Outlook” on the <a href="#/rules">Rules page</a> so new mail sorts itself too.</p>
       <div style="display:flex;gap:8px"><button class="btn" id="undoNow">Undo this cleanup</button><a class="btn primary" href="#/mail/inbox">Go to Inbox</a></div></div>`;
     $('#undoNow').onclick = () => undoRun(plan.runId);
-  } catch (e) { showError(e); }
+  } catch (e) {
+    stage.innerHTML = `<div class="card"><h2 style="color:var(--bad)">The cleanup stopped</h2><p>${esc(e.message)}</p><p style="font-size:13px">Anything already moved is logged. Undo it from “Past cleanups”, or preview again to carry on.</p></div>`;
+    showError(e);
+  }
 }
 
 async function undoRun(runId) {
@@ -310,85 +362,72 @@ async function undoRun(runId) {
 }
 
 // ================= Settings =================
-export function showSettings() {
+export async function showSettings(params = new URLSearchParams()) {
   const body = page('Settings');
-  const s = svc.state.settings;
+  if (params.get('added')) toast(`Signed in to ${params.get('added')}`);
+  if (params.get('signin_error')) toast(params.get('signin_error'), { timeout: 12000 });
+  if (params.get('added') || params.get('signin_error')) {
+    if (params.get('added')) svc.afterSignIn(params.get('added')).catch(() => {});
+    history.replaceState(null, '', '#/settings');
+  }
+  const ids = await svc.getSignInSettings();
   body.innerHTML = `<div class="cols"><section class="col-main">
-    <div id="upgradeCard"></div>
     <div class="card"><h2>Mailboxes</h2>
       <div id="acctList" style="display:flex;flex-direction:column;gap:10px"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="addG">Add Gmail</button><button class="btn primary" id="addM">Add Outlook / Hotmail</button></div>
-      <p style="font-size:12px">${svc.helperUrl() ? 'Mailboxes signed in through your token helper stay signed in.' : 'Gmail sign-ins last about an hour. They refresh on your next tap when they run out, or tap “Reconnect” at the top. Set up the token helper (SETUP.md) to stay signed in.'}</p>
+      <p style="font-size:12px">You sign in once per mailbox. The app keeps you signed in on this PC.</p>
     </div>
-    <form class="card" id="prefs"><h2>Preferences</h2>
-      <label class="check"><input type="checkbox" name="sweep" ${s.sweep ? 'checked' : ''}> Sort new mail with my rules while the app is open</label>
-      <label class="check"><input type="checkbox" name="remoteImages" ${s.remoteImages ? 'checked' : ''}> Always show images in emails <span class="muted">(off blocks tracking pixels)</span></label>
-      <label class="check"><input type="checkbox" name="autoReconnect" ${s.autoReconnect ? 'checked' : ''}> Reconnect mailboxes automatically when I tap <span class="muted">(a sign-in window flashes briefly about once an hour)</span></label>
+    <form class="card" id="prefs"><h2>Reading</h2>
+      <label class="check"><input type="checkbox" name="remoteImages" ${svc.state.prefs.remoteImages ? 'checked' : ''}> Always show images in emails <span class="muted">(off blocks tracking pixels)</span></label>
     </form>
   </section><aside class="col-side">
     <form class="card" id="ids"><h2>Sign-in setup</h2><p>From Google Cloud and Microsoft Azure. See <a href="https://github.com/DevilBike/unified-inbox/blob/main/SETUP.md" target="_blank" rel="noopener">SETUP.md</a>.</p>
-      <label class="field">Google client ID<input class="input" name="googleClientId" value="${esc(s.googleClientId || '')}" placeholder="….apps.googleusercontent.com"></label>
-      <label class="field">Microsoft application (client) ID<input class="input" name="microsoftClientId" value="${esc(s.microsoftClientId || '')}" placeholder="00000000-0000-0000-0000-000000000000"></label>
-      <label class="field">Token helper address <span class="muted" style="font-size:12px">(optional, keeps you signed in)</span><input class="input" name="tokenHelperUrl" value="${esc(s.tokenHelperUrl || '')}" placeholder="https://unified-inbox-tokens.yourname.workers.dev"></label>
-      <p style="font-size:12px">Sign-in return address to register: <code>${esc(new URL('auth.html', location.href.split('#')[0]).href)}</code></p>
-      <div style="display:flex;gap:8px"><button class="btn">Save</button><button type="button" class="btn" id="testHelper">Test helper</button></div></form>
+      <label class="field">Google client ID<input class="input" name="googleClientId" value="${esc(ids.googleClientId)}" placeholder="….apps.googleusercontent.com" autocomplete="off"></label>
+      <label class="field">Google client secret<input class="input" name="googleClientSecret" type="password" placeholder="${ids.hasGoogleSecret ? 'Saved. Paste a new one to replace it' : 'GOCSPX-…'}" autocomplete="off"></label>
+      <label class="field">Microsoft application (client) ID<input class="input" name="microsoftClientId" value="${esc(ids.microsoftClientId)}" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off"></label>
+      <p style="font-size:12px">Microsoft redirect URI to register: <code>${esc(ids.redirectUri)}</code></p>
+      <div><button class="btn">Save</button></div></form>
     <div class="card"><h2>App version</h2><p>You have version <strong>${esc(APP_VERSION)}</strong>.</p>
       <div id="updInfo"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="checkUpd">Check for updates</button><a class="btn" href="#/notes">Notes for Claude</a></div></div>
-    <div class="card"><h2>This device</h2><p>Mail, rules and sign-ins are stored only in this browser. Export your rules before clearing.</p>
-      <div><button class="btn danger" id="wipe">Sign out everywhere and clear this device</button></div></div>
+    <div class="card"><h2>On this PC</h2><p>Sign-ins, rules and cleanup history are kept in <code style="overflow-wrap:anywhere">${esc(svc.state.dataDir)}</code>. Nothing is sent anywhere except to Google and Microsoft.</p>
+      <div><button class="btn" id="clearCache">Clear cached mail lists</button></div></div>
   </aside></div>`;
   const renderAccts = () => {
-    $('#acctList').innerHTML = svc.state.accounts.map((a) => `<div style="display:flex;flex-direction:column;gap:8px;border:1px solid var(--line);border-radius:10px;padding:12px">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="dot" style="background:${esc(a.color)}"></span><strong style="flex:1;min-width:160px">${esc(a.email)}</strong>
-        <span class="muted" style="font-size:12px">${a.provider === 'google' ? 'Gmail' : 'Outlook'} · ${a.status === 'needs-password' ? '<span style="color:var(--warn)">sign in again</span>' : a.status === 'needs-signin' ? '<span style="color:var(--warn)">needs reconnect</span>' : 'connected'}</span>
+    $('#acctList').innerHTML = svc.state.accounts.map((a) => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;padding:12px">
+        <span class="dot" style="background:${esc(a.color)}"></span><strong style="flex:1;min-width:160px">${esc(a.email)}</strong>
+        <span class="muted" style="font-size:12px">${a.provider === 'google' ? 'Gmail' : 'Outlook'} · ${a.status === 'ok' ? 'connected' : '<span style="color:var(--warn)">sign in again</span>'}</span>
         <input type="color" value="${esc(a.color)}" data-color="${esc(a.id)}" aria-label="Color for ${esc(a.email)}" style="width:36px;height:30px;border:0;background:none">
-        <button class="btn small" data-signin="${esc(a.id)}">Sign in again</button><button class="btn small danger" data-rm="${esc(a.id)}">Remove</button></div>
-      <label class="field">Signature<textarea class="input" rows="2" data-sig="${esc(a.id)}" placeholder="Added to the end of messages you send from this address">${esc(a.signature || '')}</textarea></label></div>`).join('') || '<p>No mailboxes yet.</p>';
-    $$('[data-color]').forEach((el) => { el.onchange = () => svc.updateAccount(el.dataset.color, { color: el.value }); });
-    $$('[data-sig]').forEach((el) => { el.onchange = () => { svc.updateAccount(el.dataset.sig, { signature: el.value }); toast('Signature saved'); }; });
-    $$('[data-rm]').forEach((b) => { b.onclick = async () => { if (await confirmDialog('Remove mailbox?', 'This only removes it from this app on this device. Your mail isn’t touched.', { ok: 'Remove', danger: true })) { await svc.removeAccount(b.dataset.rm); renderAccts(); } }; });
-    $$('[data-signin]').forEach((b) => { b.onclick = async () => { try { const r = await svc.reconnect([acctOf(b.dataset.signin)], { interactive: true }); toast(r.failed.length ? r.failed[0].error : 'Signed in'); renderAccts(); } catch (e) { showError(e); } }; });
-  };
-  const renderUpgrade = () => {
-    const list = svc.accountsToUpgrade();
-    $('#upgradeCard').innerHTML = list.length ? `<div class="card" style="border-color:#2c3c5e;background:#141c2b"><h2>Stay signed in</h2>
-      <p>Your token helper is set up. Sign in once more to ${list.length === 1 ? esc(list[0].email) : `these ${list.length} mailboxes`} and they’ll stay signed in from then on.</p>
-      <div><button class="btn primary" id="upgradeBtn">Sign in once more</button></div></div>` : '';
-    $('#upgradeBtn')?.addEventListener('click', async () => {
-      try {
-        const r = await svc.reconnect(list, { interactive: true });
-        toast(r.failed.length ? `${r.ok.length} done, ${r.failed.length} failed: ${r.failed[0].error}` : 'All set. You’ll stay signed in.');
-        renderUpgrade(); renderAccts();
-      } catch (e) { showError(e); }
-    });
+        <button class="btn small ${a.status === 'ok' ? '' : 'primary'}" data-signin="${esc(a.id)}">Sign in again</button><button class="btn small danger" data-rm="${esc(a.id)}">Remove</button></div>`).join('') || '<p>No mailboxes yet.</p>';
+    $$('[data-color]').forEach((el) => { el.onchange = () => svc.updateAccount(el.dataset.color, { color: el.value }).catch(showError); });
+    $$('[data-rm]').forEach((b) => { b.onclick = async () => { if (await confirmDialog('Remove mailbox?', 'This removes it from the app and forgets its sign-in on this PC. Your mail isn’t touched.', { ok: 'Remove', danger: true })) { await svc.removeAccount(b.dataset.rm); renderAccts(); } }; });
+    $$('[data-signin]').forEach((b) => { b.onclick = () => { const a = acctOf(b.dataset.signin); svc.signIn(a.provider, a.email); }; });
   };
   renderAccts();
-  renderUpgrade();
+  const needSetup = (kind) => { toast(`Add your ${kind === 'google' ? 'Google client ID and secret' : 'Microsoft application ID'} under “Sign-in setup” first.`); $('#ids').scrollIntoView({ behavior: 'smooth' }); };
+  $('#addG').onclick = () => (svc.state.setup.google ? svc.signIn('google') : needSetup('google'));
+  $('#addM').onclick = () => (svc.state.setup.microsoft ? svc.signIn('microsoft') : needSetup('microsoft'));
+  $('#prefs').onchange = (e) => svc.savePrefs({ [e.target.name]: e.target.checked });
+  $('#ids').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await svc.saveSignInSettings({ googleClientId: f.googleClientId.value, googleClientSecret: f.googleClientSecret.value, microsoftClientId: f.microsoftClientId.value });
+      toast('Saved');
+      showSettings();
+    } catch (err) { showError(err); }
+  };
+  $('#clearCache').onclick = async () => { await svc.clearMailCache(); toast('Cleared. Lists reload from your mailboxes.'); };
   $('#checkUpd').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = 'Checking…';
     const u = await checkForUpdate();
     e.target.disabled = false; e.target.textContent = 'Check for updates';
-    if (u.offline) { toast('Couldn’t check. Are you online?'); return; }
+    if (u.offline) { toast(u.error || 'Couldn’t check. Are you online?'); return; }
     $('#updInfo').innerHTML = u.available
       ? `<div class="banner info" style="flex-direction:column;align-items:flex-start"><strong>Version ${esc(u.latest)} is ready.</strong>${u.changes.length ? `<ul style="margin:4px 0 0;padding-left:18px">${u.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}<button class="btn small primary" id="doUpd" style="margin-top:6px">Update now</button></div>`
       : '<p style="color:var(--good)">You’re on the latest version.</p>';
-    $('#doUpd')?.addEventListener('click', (ev) => { ev.target.disabled = true; ev.target.textContent = 'Updating…'; installUpdate(); });
+    $('#doUpd')?.addEventListener('click', (ev) => { ev.target.disabled = true; ev.target.textContent = 'Updating…'; installUpdate().catch(showError); });
   };
-  $('#testHelper').onclick = async () => {
-    const url = $('#ids').tokenHelperUrl.value.trim();
-    if (!url) { toast('Paste the helper address first.'); return; }
-    try {
-      const h = await helperHealth(url);
-      toast(h.ok ? `Helper works. Google: ${h.google ? 'ready' : 'missing settings'} · Microsoft: ${h.microsoft ? 'ready' : 'missing settings'}` : 'Helper answered, but something is off.', { timeout: 9000 });
-    } catch { toast('Couldn’t reach the helper. Check the address and that this site is in ALLOWED_ORIGINS.', { timeout: 9000 }); }
-  };
-  const add = (kind) => async () => { try { const a = await svc.addAccount(kind); toast(`Added ${a.email}`); renderAccts(); } catch (e) { showError(e); } };
-  $('#addG').onclick = add('google');
-  $('#addM').onclick = add('microsoft');
-  $('#prefs').onchange = (e) => svc.saveSettings({ [e.target.name]: e.target.checked });
-  $('#ids').onsubmit = async (e) => { e.preventDefault(); await svc.saveSettings({ googleClientId: e.target.googleClientId.value.trim(), microsoftClientId: e.target.microsoftClientId.value.trim(), tokenHelperUrl: e.target.tokenHelperUrl.value.trim() }); toast('Saved'); renderUpgrade(); };
-  $('#wipe').onclick = async () => { if (await confirmDialog('Clear this device?', 'Removes all mailboxes, cached mail, rules and settings from this browser. Your actual mail isn’t touched.', { ok: 'Clear everything', danger: true })) svc.forgetEverything(); };
 }
 
 export { icon };

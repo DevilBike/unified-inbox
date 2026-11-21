@@ -12,8 +12,7 @@ async function load() { return (await kv.get('claudeNotes')) || []; }
 async function save(list) { await kv.set('claudeNotes', list); }
 
 function context(note) {
-  const device = window.matchMedia('(max-width: 860px)').matches ? 'phone' : 'desktop';
-  return [`App version: ${APP_VERSION}`, `Device: ${device} (${navigator.userAgent.match(/Android|Windows|Mac OS X|iPhone|Linux/)?.[0] || 'unknown'})`,
+  return [`App version: ${APP_VERSION}`, `Device: desktop app (${navigator.userAgent.match(/Windows|Mac OS X|Linux/)?.[0] || 'unknown'}, window ${window.innerWidth}px wide)`,
     note.screen ? `Screen: ${note.screen}` : '', `Written: ${new Date(note.at).toISOString().slice(0, 16).replace('T', ' ')}`].filter(Boolean).join('\n');
 }
 

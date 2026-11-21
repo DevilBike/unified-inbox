@@ -1,13 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { evaluate, normalizeRule, matchesCondition, isCheckableHere } from '../js/core/rules.js';
+import { evaluate, normalizeRule, matchesCondition, isCheckableHere, setSenderFolder } from '../js/core/rules.js';
 import { gmailXmlToRules, gmailQueryToConditions, outlookRulesToRules, mergeRules, parseRulesJson, exportRulesJson } from '../js/core/importers.js';
 import { toGmailFilter, toOutlookRules, ruleToGmailQuery } from '../js/core/compile.js';
-import { planCleanup, runCleanup, undoCleanup, excludeFromPlan } from '../js/core/cleanup.js';
+import { planCleanup, runCleanup, undoCleanup, excludeFromPlan, reassignInPlan, keysFromSender, bucketForFolder, BUCKET_STAY, BUCKET_TRASH } from '../js/core/cleanup.js';
 import { buildRawMessage, parseAddress, parseAddressList, extractGmailParts, textToBase64Url, parseIcsInvite } from '../js/core/mime.js';
 import { phishingHint } from '../js/core/phish.js';
-import { snoozeLabelName, parseSnoozeLabel, snoozeCategory, parseSnoozeCategory } from '../js/core/snooze.js';
 import { DEFAULT_RULES } from '../js/core/default-rules.js';
 
 const msg = (o) => ({ key: o.id, id: o.id, from: { name: '', address: '' }, to: [], subject: '', bulk: false, ...o });
@@ -165,10 +164,40 @@ test('phishing hint', () => {
   assert.match(phishingHint({ name: 'PayPal Support', address: 'help@paypa1-secure.net' }), /PayPal/);
 });
 
-test('snooze encoding', () => {
-  const t = Date.parse('2026-11-20T15:00:00Z');
-  assert.equal(snoozeLabelName(t), 'Snoozed/2026-11-20T15:00Z');
-  assert.equal(parseSnoozeLabel(snoozeLabelName(t)), t);
-  assert.equal(parseSnoozeCategory(snoozeCategory(t)), t);
-  assert.equal(parseSnoozeLabel('Snoozed'), null);
+
+test('always file a sender: one top rule per folder, sender moves between them', () => {
+  let rules = DEFAULT_RULES;
+  rules = setSenderFolder(rules, 'Deals@Shop.example', 'receipts');
+  assert.equal(rules[0].name, 'Senders → Receipts');
+  assert.deepEqual(rules[0].match.any, [{ from: ['deals@shop.example'] }]);
+  const msg = { from: { name: '', address: 'deals@shop.example' }, to: [], subject: 'Big sale', bulk: true };
+  assert.equal(evaluate(msg, DEFAULT_RULES, 'me@example.net').folder, 'promotions');
+  assert.equal(evaluate(msg, rules, 'me@example.net').folder, 'receipts', 'beats the bulk Promotions rule');
+  rules = setSenderFolder(rules, 'other@shop.example', 'receipts');
+  assert.equal(rules.filter((r) => r.name.startsWith('Senders')).length, 1);
+  rules = setSenderFolder(rules, 'deals@shop.example', 'finance');
+  assert.deepEqual(rules.find((r) => r.name === 'Senders → Receipts').match.any[0].from, ['other@shop.example']);
+  assert.equal(evaluate(msg, rules, 'me@example.net').folder, 'finance');
+  rules = setSenderFolder(rules, 'deals@shop.example', 'inbox');
+  assert.ok(!rules.some((r) => r.name === 'Senders → Finance'), 'empty sender rule is dropped');
+  assert.equal(rules.length, DEFAULT_RULES.length + 1);
+});
+
+test('reassign messages in a cleanup plan', () => {
+  const plan = planCleanup([{ account: { id: 'a', email: 'me@example.net' }, messages: [
+    { key: 'k1', from: { address: 'shop@example.com' }, to: [], subject: 'Your receipt', date: 2 },
+    { key: 'k2', from: { address: 'pat@example.org' }, to: [], subject: 'hi', date: 1 },
+    { key: 'k3', from: { address: 'pat@example.org' }, to: [], subject: 'again', date: 3 },
+  ] }], DEFAULT_RULES, { trashPromotions: true });
+  assert.equal(plan.totals.receipts, 1);
+  assert.equal(plan.totals[BUCKET_STAY], 2);
+  const keys = keysFromSender(plan, 'PAT@example.org');
+  assert.deepEqual(keys.sort(), ['k2', 'k3']);
+  const p2 = reassignInPlan(plan, Object.fromEntries(keys.map((k) => [k, 'jobs'])));
+  assert.equal(p2.totals.jobs, 2);
+  assert.equal(p2.totals[BUCKET_STAY], undefined);
+  assert.deepEqual(p2.accounts[0].buckets.jobs.map((m) => m.key), ['k3', 'k2'], 'newest first');
+  assert.equal(bucketForFolder(plan, 'promotions'), BUCKET_TRASH);
+  assert.equal(bucketForFolder(plan, 'inbox'), BUCKET_STAY);
+  assert.equal(plan.totals.receipts, 1, 'original plan untouched');
 });

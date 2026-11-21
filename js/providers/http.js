@@ -9,8 +9,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // fetch with the account's token, retries on rate limits and brief outages.
 export async function apiFetch(ctx, url, { method = 'GET', body, headers = {}, json = true, retries = 4 } = {}) {
   let attempt = 0;
+  let fresh = false;
   for (;;) {
-    const token = await ctx.getToken();
+    const token = await ctx.getToken(fresh);
     const h = { Authorization: `Bearer ${token}`, ...headers };
     let payload = body;
     if (body && typeof body === 'object' && !(body instanceof Blob) && !(body instanceof FormData) && typeof body !== 'string') {
@@ -25,6 +26,7 @@ export async function apiFetch(ctx, url, { method = 'GET', body, headers = {}, j
       throw new ApiError('No connection. Check your internet and try again.', 0);
     }
     if (res.status === 401) {
+      if (!fresh) { fresh = true; continue; } // the token may have just been revoked; get a new one once
       ctx.onUnauthorized?.();
       throw new NeedsSignIn(ctx.account);
     }

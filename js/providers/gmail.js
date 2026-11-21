@@ -1,17 +1,14 @@
-// Gmail + Google Calendar + Google Contacts adapter.
+// Gmail adapter: reading, moving and filters.
 import { apiFetch, pool } from './http.js';
 import { TARGET_FOLDERS, folderName } from '../core/folders.js';
-import { getHeader, parseAddress, parseAddressList, extractGmailParts, buildRawMessage, textToBase64Url, base64UrlDecodeText, parseIcsInvite } from '../core/mime.js';
+import { getHeader, parseAddress, parseAddressList, extractGmailParts } from '../core/mime.js';
 import { toGmailFilter } from '../core/compile.js';
 import { gmailApiFiltersToEntries, gmailEntriesToRules } from '../core/importers.js';
-import { SNOOZE_ROOT, snoozeLabelName, parseSnoozeLabel } from '../core/snooze.js';
 
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me';
-const CAL = 'https://www.googleapis.com/calendar/v3';
-const PEOPLE = 'https://people.googleapis.com/v1';
 const META_HEADERS = ['From', 'To', 'Cc', 'Subject', 'Date', 'List-Unsubscribe', 'Message-ID', 'References', 'In-Reply-To'];
 
-const SYSTEM_VIEWS = { inbox: 'INBOX', flagged: 'STARRED', drafts: 'DRAFT', sent: 'SENT', junk: 'SPAM', trash: 'TRASH' };
+const SYSTEM_VIEWS = { inbox: 'INBOX', junk: 'SPAM', trash: 'TRASH' };
 
 export class GmailAdapter {
   constructor(account, ctx) {
@@ -50,7 +47,6 @@ export class GmailAdapter {
 
   async ensureFolders() {
     for (const f of TARGET_FOLDERS) await this.labelId(f.name);
-    await this.labelId(SNOOZE_ROOT);
   }
 
   async folderLabelIds() {
@@ -105,7 +101,6 @@ export class GmailAdapter {
 
   async viewQuery(view) {
     if (SYSTEM_VIEWS[view]) return { labelIds: [SYSTEM_VIEWS[view]], includeSpamTrash: view === 'junk' || view === 'trash' };
-    if (view === 'snoozed') { const id = await this.labelId(SNOOZE_ROOT); return { labelIds: [id] }; }
     const id = await this.folderLabelId(view);
     return { labelIds: [id] };
   }
@@ -145,17 +140,7 @@ export class GmailAdapter {
   async getFull(msg) {
     const m = await this.api(`/messages/${msg.id}?format=full`);
     const parts = extractGmailParts(m.payload);
-    let invite = null;
-    if (parts.calendar) {
-      let ics = parts.calendar;
-      if (typeof ics === 'object' && ics.attachmentId) {
-        const a = await this.api(`/messages/${msg.id}/attachments/${ics.attachmentId}`);
-        ics = base64UrlDecodeText(a.data);
-      }
-      invite = parseIcsInvite(ics);
-      if (!invite.uid || invite.method !== 'REQUEST') invite = null;
-    }
-    return { ...this.normalize(m, msg.view), html: parts.html, text: parts.text, attachments: parts.attachments, invite };
+    return { ...this.normalize(m, msg.view), html: parts.html, text: parts.text, attachments: parts.attachments };
   }
 
   async getAttachment(msg, att) {
@@ -211,88 +196,6 @@ export class GmailAdapter {
     for (let i = 0; i < ids.length; i += 1000) await this.modify(ids.slice(i, i + 1000), ['INBOX'], [label]);
   }
 
-  // ----- compose -----
-  // draft: { to, cc, bcc, subject, text, html, attachments:[{name,mimeType,base64}], mode: 'new'|'reply'|'replyAll'|'forward', original, draftId }
-  buildRaw(draft) {
-    const o = draft.original;
-    return buildRawMessage({
-      from: { name: this.account.name || '', address: this.account.email },
-      to: draft.to, cc: draft.cc, bcc: draft.bcc, subject: draft.subject, text: draft.text, html: draft.html,
-      inReplyTo: o && draft.mode !== 'forward' ? o.messageId : '',
-      references: o && draft.mode !== 'forward' ? [o.references, o.messageId].filter(Boolean).join(' ') : '',
-      attachments: draft.attachments || [],
-    });
-  }
-
-  async send(draft) {
-    const raw = textToBase64Url(this.buildRaw(draft));
-    const threadId = draft.original && draft.mode !== 'forward' ? draft.original.threadId : undefined;
-    if (draft.draftId) return this.api('/drafts/send', { method: 'POST', body: { id: draft.draftId, message: { raw, threadId } } });
-    return this.api('/messages/send', { method: 'POST', body: { raw, threadId } });
-  }
-
-  async saveDraft(draft) {
-    const raw = textToBase64Url(this.buildRaw(draft));
-    const threadId = draft.original && draft.mode !== 'forward' ? draft.original.threadId : undefined;
-    const body = { message: { raw, threadId } };
-    const d = draft.draftId
-      ? await this.api(`/drafts/${draft.draftId}`, { method: 'PUT', body: { id: draft.draftId, ...body } })
-      : await this.api('/drafts', { method: 'POST', body });
-    return d.id;
-  }
-
-  async draftIdForMessage(messageId) {
-    let pageToken;
-    do {
-      const p = new URLSearchParams({ maxResults: '100' });
-      if (pageToken) p.set('pageToken', pageToken);
-      const data = await this.api(`/drafts?${p}`);
-      const hit = (data.drafts || []).find((d) => d.message?.id === messageId);
-      if (hit) return hit.id;
-      pageToken = data.nextPageToken;
-    } while (pageToken);
-    return null;
-  }
-
-  async deleteDraft(draftId) { await this.api(`/drafts/${draftId}`, { method: 'DELETE' }); }
-
-  // ----- snooze -----
-  async snooze(msg, at) {
-    const root = await this.labelId(SNOOZE_ROOT);
-    const child = await this.labelId(snoozeLabelName(at));
-    await this.modify([msg.id], [root, child], ['INBOX']);
-    return msg.id;
-  }
-
-  async unsnooze(msg) {
-    await this.loadLabels(true);
-    const snoozeIds = Object.entries(this.labelNames).filter(([, n]) => n === SNOOZE_ROOT || n.startsWith(`${SNOOZE_ROOT}/`)).map(([id]) => id);
-    const cur = (msg.labelIds || []).filter((id) => snoozeIds.includes(id));
-    await this.modify([msg.id], ['INBOX'], cur.length ? cur : snoozeIds.slice(0, 1));
-    return msg.id;
-  }
-
-  snoozeUntil(msg) {
-    for (const id of msg.labelIds || []) { const t = parseSnoozeLabel(this.labelNames?.[id]); if (t) return t; }
-    return null;
-  }
-
-  // Bring back everything whose snooze time has passed. Returns count.
-  async processSnoozes(now = Date.now()) {
-    await this.loadLabels(true);
-    const root = this.labels[SNOOZE_ROOT.toLowerCase()];
-    let count = 0;
-    for (const [id, name] of Object.entries(this.labelNames)) {
-      const t = parseSnoozeLabel(name);
-      if (!t || t > now) continue;
-      const { ids } = await this.listIds({ labelIds: [id], max: 500 });
-      if (ids.length) await this.modify(ids, ['INBOX'], [id, root].filter(Boolean));
-      count += ids.length;
-      await this.api(`/labels/${id}`, { method: 'DELETE' }).catch(() => {});
-    }
-    return count;
-  }
-
   // ----- rules on the provider -----
   async readProviderRules() {
     await this.loadLabels(true);
@@ -321,60 +224,6 @@ export class GmailAdapter {
     this.account.pushedFilterIds = created;
     await this.ctx.saveAccount?.(this.account);
     return { created: created.length, skipped };
-  }
-
-  // ----- calendar -----
-  normalizeEvent(e) {
-    const allDay = !!e.start?.date;
-    const me = (e.attendees || []).find((a) => a.self);
-    return {
-      key: `${this.account.id}:${e.id}`, accountId: this.account.id, provider: 'google', id: e.id,
-      title: e.summary || '(no title)', location: e.location || '', link: e.htmlLink || '',
-      start: Date.parse(e.start?.dateTime || `${e.start?.date}T00:00:00`), end: Date.parse(e.end?.dateTime || `${e.end?.date}T00:00:00`), allDay,
-      response: me?.responseStatus || (e.organizer?.self ? 'organizer' : 'none'),
-      status: e.status,
-    };
-  }
-
-  async listEvents(timeMin, timeMax) {
-    const p = new URLSearchParams({ singleEvents: 'true', orderBy: 'startTime', timeMin: new Date(timeMin).toISOString(), timeMax: new Date(timeMax).toISOString(), maxResults: '250' });
-    const data = await apiFetch(this.ctx, `${CAL}/calendars/primary/events?${p}`);
-    return (data.items || []).filter((e) => e.status !== 'cancelled').map((e) => this.normalizeEvent(e));
-  }
-
-  // response: 'accepted' | 'tentative' | 'declined'
-  async respondToInvite(invite, response) {
-    const p = new URLSearchParams({ iCalUID: invite.uid });
-    const data = await apiFetch(this.ctx, `${CAL}/calendars/primary/events?${p}`);
-    const ev = (data.items || [])[0];
-    if (!ev) throw new Error('This invite isn’t on your Google Calendar yet. Open it in Google Calendar to respond.');
-    const attendees = (ev.attendees || []).map((a) => (a.self || a.email?.toLowerCase() === this.account.email ? { ...a, responseStatus: response } : a));
-    await apiFetch(this.ctx, `${CAL}/calendars/primary/events/${ev.id}?sendUpdates=all`, { method: 'PATCH', body: { attendees } });
-  }
-
-  async createEvent({ title, start, end, location, description }) {
-    const body = { summary: title, location, description, start: { dateTime: new Date(start).toISOString() }, end: { dateTime: new Date(end).toISOString() } };
-    const e = await apiFetch(this.ctx, `${CAL}/calendars/primary/events`, { method: 'POST', body });
-    return this.normalizeEvent(e);
-  }
-
-  // ----- contacts -----
-  async listContacts() {
-    const out = [];
-    const grab = async (url, key) => {
-      let pageToken;
-      do {
-        const data = await apiFetch(this.ctx, `${url}${pageToken ? `&pageToken=${pageToken}` : ''}`);
-        for (const p of data[key] || []) {
-          const name = p.names?.[0]?.displayName || '';
-          for (const e of p.emailAddresses || []) if (e.value) out.push({ name, email: e.value.toLowerCase(), source: this.account.email });
-        }
-        pageToken = data.nextPageToken;
-      } while (pageToken && out.length < 5000);
-    };
-    await grab(`${PEOPLE}/people/me/connections?personFields=names,emailAddresses&pageSize=1000`, 'connections').catch(() => {});
-    await grab(`${PEOPLE}/otherContacts?readMask=names,emailAddresses&pageSize=1000`, 'otherContacts').catch(() => {});
-    return out;
   }
 }
 

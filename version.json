@@ -1,9 +1,11 @@
 {
-  "version": "0.3.0",
-  "date": "2026-11-19",
+  "version": "0.4.0",
+  "date": "2026-11-20",
   "changes": [
-    "Update button: the app tells you when a new version is out and installs it with one tap",
-    "Notes for Claude: jot down bugs and ideas, then send them to GitHub for the next round of changes",
-    "Stay signed in: reconnect on your next tap, plus the optional token helper"
+    "Now a desktop app for cleaning up your inboxes. It runs on your PC from the Unified Inbox shortcut.",
+    "You stay signed in. No more reconnecting, and no Cloudflare helper needed.",
+    "While reviewing a cleanup you can read any message, send it somewhere else, or sort a whole sender at once.",
+    "“Always file sender” makes a rule from any message.",
+    "Writing mail, calendar, contacts and snooze were removed."
   ]
 }

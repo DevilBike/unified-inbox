@@ -29,27 +29,53 @@ export function planCleanup(inputs, rules, opts = {}) {
     }
     return { accountId: account.id, email: account.email, buckets };
   });
-  const totals = {};
-  for (const a of accounts) for (const [k, list] of Object.entries(a.buckets)) totals[k] = (totals[k] || 0) + list.length;
-  return { runId, createdAt: Date.now(), opts: { ...opts }, accounts, totals };
+  return withTotals({ runId, createdAt: Date.now(), opts: { ...opts } }, accounts);
 }
 
-// Drop messages the user unticked in the preview.
-export function excludeFromPlan(plan, excludedKeys) {
-  const ex = new Set(excludedKeys);
+function withTotals(plan, accounts) {
+  const totals = {};
+  for (const a of accounts) for (const [k, list] of Object.entries(a.buckets)) if (list.length) totals[k] = (totals[k] || 0) + list.length;
+  return { ...plan, accounts, totals };
+}
+
+// Where a folder choice lands in this plan (Promotions may go to Trash instead).
+export function bucketForFolder(plan, folderKey) {
+  if (!folderKey || folderKey === 'inbox') return BUCKET_STAY;
+  if (folderKey === 'promotions' && plan.opts?.trashPromotions) return BUCKET_TRASH;
+  return folderKey;
+}
+
+export function bucketOf(plan, key) {
+  for (const a of plan.accounts) for (const [k, list] of Object.entries(a.buckets)) if (list.some((m) => m.key === key)) return k;
+  return null;
+}
+
+// Send messages to different buckets than the rules picked. overrides: { [messageKey]: bucket }
+export function reassignInPlan(plan, overrides) {
+  const ov = overrides instanceof Map ? overrides : new Map(Object.entries(overrides || {}));
   const accounts = plan.accounts.map((a) => {
     const buckets = {};
     for (const [k, list] of Object.entries(a.buckets)) {
-      const keep = list.filter((m) => !ex.has(m.key));
-      const moved = list.filter((m) => ex.has(m.key));
-      if (keep.length) (buckets[k] ||= []).push(...keep);
-      if (moved.length) (buckets[BUCKET_STAY] ||= []).push(...moved);
+      for (const m of list) {
+        const to = ov.get(m.key) || k;
+        (buckets[to] ||= []).push(m);
+      }
     }
+    for (const list of Object.values(buckets)) list.sort((x, y) => (y.date || 0) - (x.date || 0));
     return { ...a, buckets };
   });
-  const totals = {};
-  for (const a of accounts) for (const [k, list] of Object.entries(a.buckets)) totals[k] = (totals[k] || 0) + list.length;
-  return { ...plan, accounts, totals };
+  return withTotals(plan, accounts);
+}
+
+// Drop messages the user unticked in the preview (they stay in the Inbox).
+export function excludeFromPlan(plan, excludedKeys) {
+  return reassignInPlan(plan, Object.fromEntries(excludedKeys.map((k) => [k, BUCKET_STAY])));
+}
+
+// Every message in the plan from this sender (exact address), for "always file this sender".
+export function keysFromSender(plan, address) {
+  const addr = String(address || '').toLowerCase();
+  return plan.accounts.flatMap((a) => Object.values(a.buckets).flat()).filter((m) => (m.from?.address || '').toLowerCase() === addr).map((m) => m.key);
 }
 
 function chunk(list, n) {

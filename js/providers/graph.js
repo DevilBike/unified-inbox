@@ -1,14 +1,12 @@
-// Outlook.com (Microsoft Graph) adapter: mail, calendar, contacts.
+// Outlook.com (Microsoft Graph) adapter: reading, moving and rules.
 import { apiFetch, pool } from './http.js';
 import { TARGET_FOLDERS, folderName } from '../core/folders.js';
 import { toOutlookRules, isAppOutlookRule } from '../core/compile.js';
 import { outlookRulesToRules } from '../core/importers.js';
-import { SNOOZE_ROOT, snoozeCategory, parseSnoozeCategory, isSnoozeCategory } from '../core/snooze.js';
-import { escapeHtml } from '../core/mime.js';
 
 const API = 'https://graph.microsoft.com/v1.0';
 const SELECT = 'id,conversationId,subject,bodyPreview,from,toRecipients,ccRecipients,receivedDateTime,isRead,flag,hasAttachments,inferenceClassification,categories,internetMessageId,internetMessageHeaders,isDraft';
-const WELL_KNOWN = { inbox: 'inbox', drafts: 'drafts', sent: 'sentitems', junk: 'junkemail', trash: 'deleteditems', archive: 'archive' };
+const WELL_KNOWN = { inbox: 'inbox', junk: 'junkemail', trash: 'deleteditems', archive: 'archive' };
 
 const addr = (r) => ({ name: r?.emailAddress?.name || '', address: (r?.emailAddress?.address || '').toLowerCase() });
 const recips = (list) => (list || []).map((a) => ({ emailAddress: { address: a.address, name: a.name || undefined } }));
@@ -50,13 +48,11 @@ export class GraphAdapter {
 
   async destinationFor(view) {
     if (WELL_KNOWN[view]) return WELL_KNOWN[view];
-    if (view === 'snoozed') return this.folderId(SNOOZE_ROOT);
     return this.folderId(folderName(view));
   }
 
   async ensureFolders() {
     for (const f of TARGET_FOLDERS) await this.folderId(f.name);
-    await this.folderId(SNOOZE_ROOT);
   }
 
   // ----- messages -----
@@ -120,19 +116,11 @@ export class GraphAdapter {
   async getFull(msg) {
     const m = await this.api(`/me/messages/${msg.id}?$select=${SELECT},body&$expand=attachments($select=id,name,contentType,size,isInline)`, { headers: { Prefer: 'outlook.body-content-type="html"' } });
     const full = this.normalize(m, msg.view);
-    let invite = null;
-    if (full.isInvite || msg.isInvite) {
-      try {
-        const em = await this.api(`/me/messages/${msg.id}?$expand=microsoft.graph.eventMessage/event($select=id,subject,start,end,location,responseStatus)`);
-        if (em.event) invite = { eventId: em.event.id, summary: em.event.subject, response: em.event.responseStatus?.response };
-      } catch { /* not an invite after all */ }
-    }
     return {
       ...full,
       html: m.body?.contentType === 'html' ? m.body.content : '',
       text: m.body?.contentType === 'text' ? m.body.content : '',
       attachments: (m.attachments || []).map((a) => ({ id: a.id, name: a.name, mimeType: a.contentType, size: a.size, inline: a.isInline })),
-      invite,
     };
   }
 
@@ -183,77 +171,6 @@ export class GraphAdapter {
   async trashMany(msgs) { return this.batchMove(msgs.map((m) => m.id), 'deleteditems'); }
   async restoreMany(ids) { await this.batchMove(ids, 'inbox'); }
 
-  // ----- compose -----
-  bodyHtml(draft) {
-    return draft.html || `<div style="white-space:pre-wrap">${escapeHtml(draft.text || '')}</div>`;
-  }
-
-  async attach(messageId, attachments = []) {
-    for (const a of attachments) {
-      await this.api(`/me/messages/${messageId}/attachments`, { method: 'POST', body: { '@odata.type': '#microsoft.graph.fileAttachment', name: a.name, contentType: a.mimeType, contentBytes: a.base64 } });
-    }
-  }
-
-  // Creates or updates a draft and returns its id.
-  async saveDraft(draft) {
-    const fields = { subject: draft.subject, toRecipients: recips(draft.to), ccRecipients: recips(draft.cc), bccRecipients: recips(draft.bcc) };
-    if (draft.draftId) {
-      await this.api(`/me/messages/${draft.draftId}`, { method: 'PATCH', body: { ...fields, body: { contentType: 'HTML', content: this.bodyHtml(draft) } } });
-      await this.attach(draft.draftId, draft.newAttachments ?? draft.attachments);
-      return draft.draftId;
-    }
-    let id;
-    if (draft.original && draft.mode !== 'new') {
-      const action = { reply: 'createReply', replyAll: 'createReplyAll', forward: 'createForward' }[draft.mode];
-      const d = await this.api(`/me/messages/${draft.original.id}/${action}`, { method: 'POST', body: {} });
-      id = d.id;
-      // Keep Outlook's quoted original under what the user wrote.
-      const full = await this.api(`/me/messages/${id}?$select=body`, { headers: { Prefer: 'outlook.body-content-type="html"' } });
-      const quoted = full.body?.content || '';
-      await this.api(`/me/messages/${id}`, { method: 'PATCH', body: { ...fields, body: { contentType: 'HTML', content: `${this.bodyHtml(draft)}<br>${quoted}` } } });
-    } else {
-      const d = await this.api('/me/messages', { method: 'POST', body: { ...fields, body: { contentType: 'HTML', content: this.bodyHtml(draft) } } });
-      id = d.id;
-    }
-    await this.attach(id, draft.attachments);
-    return id;
-  }
-
-  async send(draft) {
-    const id = await this.saveDraft(draft);
-    await this.api(`/me/messages/${id}/send`, { method: 'POST' });
-  }
-
-  async deleteDraft(draftId) { await this.api(`/me/messages/${draftId}`, { method: 'DELETE' }); }
-
-  // ----- snooze -----
-  async snooze(msg, at) {
-    const cats = (msg.categories || []).filter((c) => !isSnoozeCategory(c));
-    await this.api(`/me/messages/${msg.id}`, { method: 'PATCH', body: { categories: [...cats, snoozeCategory(at)] } });
-    return this.move(msg.id, await this.folderId(SNOOZE_ROOT));
-  }
-
-  async unsnooze(msg) {
-    const newId = await this.move(msg.id, 'inbox');
-    const cats = (msg.categories || []).filter((c) => !isSnoozeCategory(c));
-    await this.api(`/me/messages/${newId}`, { method: 'PATCH', body: { categories: cats } });
-    return newId;
-  }
-
-  snoozeUntil(msg) {
-    for (const c of msg.categories || []) { const t = parseSnoozeCategory(c); if (t) return t; }
-    return null;
-  }
-
-  async processSnoozes(now = Date.now()) {
-    const folder = await this.folderId(SNOOZE_ROOT, false);
-    if (!folder) return 0;
-    const data = await this.api(`/me/mailFolders/${folder}/messages?$top=200&$select=id,categories`);
-    const due = (data.value || []).filter((m) => { const t = (m.categories || []).map(parseSnoozeCategory).find(Boolean); return !t || t <= now; });
-    await pool(due, 4, (m) => this.unsnooze(m));
-    return due.length;
-  }
-
   // ----- rules on the provider -----
   async readProviderRules() {
     await this.loadFolders(true);
@@ -281,45 +198,4 @@ export class GraphAdapter {
     return { created, skipped };
   }
 
-  // ----- calendar -----
-  normalizeEvent(e) {
-    const utc = (s) => Date.parse(/Z$|[+-]\d\d:\d\d$/.test(s) ? s : `${s}Z`);
-    return {
-      key: `${this.account.id}:${e.id}`, accountId: this.account.id, provider: 'microsoft', id: e.id,
-      title: e.subject || '(no title)', location: e.location?.displayName || '', link: e.webLink || '',
-      start: utc(e.start?.dateTime), end: utc(e.end?.dateTime), allDay: !!e.isAllDay,
-      response: e.isOrganizer ? 'organizer' : ({ accepted: 'accepted', tentativelyAccepted: 'tentative', declined: 'declined' }[e.responseStatus?.response] || 'needsAction'),
-    };
-  }
-
-  async listEvents(timeMin, timeMax) {
-    const p = new URLSearchParams({ startDateTime: new Date(timeMin).toISOString(), endDateTime: new Date(timeMax).toISOString(), $top: '200', $orderby: 'start/dateTime', $select: 'id,subject,start,end,location,isAllDay,webLink,responseStatus,isOrganizer,isCancelled' });
-    const data = await this.api(`/me/calendarView?${p}`, { headers: { Prefer: 'outlook.timezone="UTC"' } });
-    return (data.value || []).filter((e) => !e.isCancelled).map((e) => this.normalizeEvent(e));
-  }
-
-  async respondToInvite(invite, response) {
-    const action = { accepted: 'accept', tentative: 'tentativelyAccept', declined: 'decline' }[response];
-    await this.api(`/me/events/${invite.eventId}/${action}`, { method: 'POST', body: { sendResponse: true } });
-  }
-
-  async createEvent({ title, start, end, location, description }) {
-    const iso = (t) => new Date(t).toISOString().replace('Z', '');
-    const e = await this.api('/me/events', { method: 'POST', headers: { Prefer: 'outlook.timezone="UTC"' }, body: { subject: title, start: { dateTime: iso(start), timeZone: 'UTC' }, end: { dateTime: iso(end), timeZone: 'UTC' }, location: { displayName: location || '' }, body: { contentType: 'Text', content: description || '' } } });
-    return this.normalizeEvent(e);
-  }
-
-  // ----- contacts -----
-  async listContacts() {
-    const out = [];
-    let url = `${API}/me/contacts?$top=500&$select=displayName,emailAddresses`;
-    while (url && out.length < 5000) {
-      const data = await this.api(url).catch(() => ({}));
-      for (const c of data.value || []) for (const e of c.emailAddresses || []) if (e.address) out.push({ name: c.displayName || e.name || '', email: e.address.toLowerCase(), source: this.account.email });
-      url = data['@odata.nextLink'];
-    }
-    const people = await this.api('/me/people?$top=200&$select=displayName,scoredEmailAddresses').catch(() => ({}));
-    for (const p of people.value || []) for (const e of p.scoredEmailAddresses || []) if (e.address) out.push({ name: p.displayName || '', email: e.address.toLowerCase(), source: this.account.email });
-    return out;
-  }
 }

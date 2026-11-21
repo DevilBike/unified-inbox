@@ -2,13 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0F1115">
 <meta name="referrer" content="no-referrer">
 <title>Unified Inbox</title>
-<link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -30,18 +28,12 @@
     <span class="spacer"></span>
     <button class="btn small chip-warn" id="reconnectBtn" hidden></button>
     <button class="btn small" id="updateBtn" hidden style="border-color:#2c3c5e;color:#C9D8FF">Update</button>
-    <button class="btn primary" id="composeBtn">
-      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      <span class="compose-label">Compose</span> <span class="kbd">C</span>
-    </button>
   </header>
   <div class="body">
     <nav class="nav" id="nav" aria-label="Main"></nav>
     <main class="main" id="main"></main>
   </div>
-  <button class="fab" id="fab" aria-label="Compose">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-  </button>
+  <div class="offline" id="offline" hidden role="alert">The app has stopped running. Start it again with <strong>Start Unified Inbox</strong> on your desktop, then reload this window.</div>
 </div>
 <dialog id="dialog"></dialog>
 <div class="toast-host" id="toasts" aria-live="polite"></div>

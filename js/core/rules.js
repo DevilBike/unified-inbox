@@ -7,7 +7,7 @@
 // Each condition object is an AND of its keys; `match.any` is an OR of conditions
 // (`match.all` is an AND of conditions). The first enabled rule that matches wins.
 
-import { FOLDER_KEYS } from './folders.js';
+import { FOLDER_KEYS, folderName } from './folders.js';
 
 export const RULES_VERSION = 1;
 
@@ -135,4 +135,33 @@ export function describeCondition(c) {
 export function describeMatch(rule) {
   const conds = rule.match.any || rule.match.all || [];
   return conds.map(describeCondition).join(rule.match.any ? '; or ' : '; and ');
+}
+
+// "Always file mail from this sender in <folder>". Keeps one "Senders → <Folder>" rule
+// per folder at the top of the list so it wins over the broader rules below it.
+// folderKey 'inbox' (or empty) just takes the sender out of those rules.
+export const SENDER_RULE_PREFIX = 'Senders → ';
+export function setSenderFolder(rules, address, folderKey) {
+  const addr = String(address || '').trim().toLowerCase();
+  const out = normalizeRules(structuredClone(rules));
+  if (!addr) return out;
+  const isSenderRule = (r) => r.name.startsWith(SENDER_RULE_PREFIX);
+  for (const r of out.filter(isSenderRule)) {
+    r.match.any = (r.match.any || [])
+      .map((c) => (c.from ? { ...c, from: c.from.filter((f) => f.toLowerCase() !== addr) } : c))
+      .filter((c) => !c.from || c.from.length);
+  }
+  const kept = out.filter((r) => !isSenderRule(r) || (r.match.any || []).length);
+  if (!folderKey || folderKey === 'inbox') return kept;
+  const name = `${SENDER_RULE_PREFIX}${folderName(folderKey)}`;
+  const existing = kept.find((r) => r.name === name);
+  if (existing) {
+    const cond = existing.match.any.find((c) => c.from && Object.keys(c).length === 1);
+    if (cond) cond.from.push(addr); else existing.match.any.push({ from: [addr] });
+    return kept;
+  }
+  const rule = normalizeRule({ name, match: { any: [{ from: [addr] }] }, actions: { moveTo: folderKey, skipInbox: true } });
+  const firstNonSender = kept.findIndex((r) => !isSenderRule(r));
+  kept.splice(firstNonSender < 0 ? kept.length : firstNonSender, 0, rule);
+  return kept;
 }
