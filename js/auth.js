@@ -11,10 +11,6 @@ export class NeedsSignIn extends Error {
   }
 }
 
-export function signInUrl(provider, hint = '') {
-  return `/auth/start?${new URLSearchParams({ provider, ...(hint ? { hint } : {}) })}`;
-}
-
 export async function accessToken(account, fresh = false) {
   try {
     return await api('token', { method: 'POST', body: { id: account.id, fresh } });

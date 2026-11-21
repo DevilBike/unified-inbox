@@ -53,8 +53,8 @@ on the permissions screen.
 
 In Settings, click **Add Gmail** or **Add Outlook / Hotmail** once for each mailbox.
 
-- The sign-in page opens in the app window, then returns you to Settings.
-- When you add another account, pick it on the account chooser (or click "Use another account").
+- The sign-in page opens in your normal browser. Pick the account, click **Allow**, and the app picks it up by itself.
+- For each extra account, pick it on the account chooser (or click "Use another account").
 - You stay signed in. If a mailbox ever needs you again, a button at the top says so.
 
 ## Using it

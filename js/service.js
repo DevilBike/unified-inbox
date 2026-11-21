@@ -1,7 +1,7 @@
 // App state and everything that talks to the mailboxes. The UI only calls this.
 import * as store from './store.js';
 import { api } from './api.js';
-import { accessToken, NeedsSignIn, signInUrl } from './auth.js';
+import { accessToken, NeedsSignIn } from './auth.js';
 import { GmailAdapter } from './providers/gmail.js';
 import { GraphAdapter } from './providers/graph.js';
 import { pool } from './providers/http.js';
@@ -79,8 +79,9 @@ function markNeedsSignIn(account) {
 
 export const accountsNeedingSignIn = () => state.accounts.filter((a) => a.status === 'needs-signin');
 
-// Sign-in happens in this window: off to Google/Microsoft, then back to Settings.
-export function signIn(provider, hint = '') { location.href = signInUrl(provider, hint); }
+// Sign-in opens in your normal browser; the app watches for it to finish.
+export const startSignIn = (provider, hint = '') => api('signin', { method: 'POST', body: { provider, hint } });
+export const signInResult = (state) => api(`signin/${encodeURIComponent(state)}`);
 
 // After coming back from a sign-in: make sure the folders exist.
 export async function afterSignIn(email) {

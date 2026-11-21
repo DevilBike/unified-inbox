@@ -31,6 +31,7 @@
   "js/ui/message.js",
   "js/ui/notes.js",
   "js/ui/pages.js",
+  "js/ui/signin.js",
   "js/update.js",
   "js/version.js",
   "package.json",

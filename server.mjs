@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Unified Inbox: the local app. Runs only on your PC at http://localhost:8765.
-// It serves the app's screens, handles signing in to Gmail and Outlook, keeps your
+// It serves the app's screens, handles signing in to Gmail and Outlook (in your normal
+// browser, where you're usually already signed in), keeps your
 // sign-ins and cleanup history in your user folder, and installs updates.
 // No dependencies: plain Node 18+.
 import http from 'node:http';
@@ -89,11 +90,12 @@ function makeStore(dir) {
 const publicAccount = ({ refreshToken, ...a }) => ({ ...a, signedIn: !!refreshToken && a.status !== 'needs-signin' });
 
 // ---------- the app server ----------
-export function createApp({ port = DEFAULT_PORT, appDir = APP_DIR, dataDir = defaultDataDir(), fetchImpl = fetch, onRestart = null, repoRaw = REPO_RAW } = {}) {
+export function createApp({ port = DEFAULT_PORT, appDir = APP_DIR, dataDir = defaultDataDir(), fetchImpl = fetch, onRestart = null, repoRaw = REPO_RAW, openUrl = null } = {}) {
   const store = makeStore(dataDir);
   const origin = `http://localhost:${port}`;
   const redirectUri = `${origin}/auth/callback`;
   const pending = new Map(); // sign-in state -> { provider, verifier, hint, at }
+  const results = new Map(); // sign-in state -> { done, email?, error? } for the app window to watch
   const tokens = new Map(); // account id -> { accessToken, expiresAt }
   const inflight = new Map();
 
@@ -124,7 +126,7 @@ export function createApp({ port = DEFAULT_PORT, appDir = APP_DIR, dataDir = def
     if (provider === 'microsoft' && !settings.microsoftClientId) throw new HttpError(400, 'Add your Microsoft application ID in Settings first.');
   }
 
-  async function signInUrl(provider, hint) {
+  async function signInUrl(provider, hint, { onState } = {}) {
     if (provider !== 'google' && provider !== 'microsoft') throw new HttpError(400, 'Unknown provider');
     const settings = await loadSettings();
     requireSetup(settings, provider);
@@ -132,6 +134,8 @@ export function createApp({ port = DEFAULT_PORT, appDir = APP_DIR, dataDir = def
     const state = rand(16);
     const { verifier, challenge } = pkce();
     pending.set(state, { provider, verifier, hint: (hint || '').toLowerCase(), at: Date.now() });
+    for (const [k, v] of results) if (Date.now() - v.at > 30 * 60000) results.delete(k);
+    onState?.(state);
     const common = { redirect_uri: redirectUri, response_type: 'code', state, code_challenge: challenge, code_challenge_method: 'S256' };
     if (provider === 'google') {
       const p = new URLSearchParams({ ...common, client_id: settings.googleClientId, scope: GOOGLE_SCOPES.join(' '), access_type: 'offline', prompt: 'consent select_account', include_granted_scopes: 'true' });
@@ -321,6 +325,21 @@ export function createApp({ port = DEFAULT_PORT, appDir = APP_DIR, dataDir = def
         return { ok: true };
       }
     }
+    // Sign-in in your normal browser (where you're already signed in to Google/Microsoft).
+    if (what === 'signin' && m === 'POST') {
+      const b = await readBody(req);
+      let state;
+      const url = await signInUrl(String(b.provider || ''), String(b.hint || ''), { onState: (st) => { state = st; } });
+      results.set(state, { done: false, at: Date.now() });
+      let opened = false;
+      if (openUrl) { try { await openUrl(url); opened = true; } catch { /* the app window opens it instead */ } }
+      return { state, url, opened };
+    }
+    if (what === 'signin' && arg && m === 'GET') {
+      const r = results.get(arg);
+      if (!r) throw new HttpError(404, 'Unknown sign-in');
+      return { done: r.done, email: r.email || null, error: r.error || null };
+    }
     if (what === 'token' && m === 'POST') {
       const b = await readBody(req);
       return accessToken(String(b.id || ''), { fresh: b.fresh === true });
@@ -358,7 +377,16 @@ export function createApp({ port = DEFAULT_PORT, appDir = APP_DIR, dataDir = def
         try { return redirect(res, await signInUrl(url.searchParams.get('provider'), url.searchParams.get('hint'))); } catch (e) { return redirect(res, `/#/settings?signin_error=${encodeURIComponent(e.message)}`); }
       }
       if (url.pathname === '/auth/callback' && req.method === 'GET') {
-        try { const email = await finishSignIn(url.searchParams); return redirect(res, `/#/settings?added=${encodeURIComponent(email)}`); } catch (e) { return redirect(res, `/#/settings?signin_error=${encodeURIComponent(e.message)}`); }
+        const state = url.searchParams.get('state') || '';
+        const watched = results.has(state);
+        try {
+          const email = await finishSignIn(url.searchParams);
+          if (watched) { results.set(state, { done: true, email, at: Date.now() }); return send(res, 200, donePage(`Signed in to ${email}`, 'You can close this tab. Unified Inbox has it.', true), 'text/html; charset=utf-8'); }
+          return redirect(res, `/#/settings?added=${encodeURIComponent(email)}`);
+        } catch (e) {
+          if (watched) { results.set(state, { done: true, error: e.message, at: Date.now() }); return send(res, 200, donePage('Sign-in didn’t finish', `${e.message} Go back to Unified Inbox and try again.`, false), 'text/html; charset=utf-8'); }
+          return redirect(res, `/#/settings?signin_error=${encodeURIComponent(e.message)}`);
+        }
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed', 'text/plain; charset=utf-8');
       const rel = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -380,20 +408,37 @@ export function createApp({ port = DEFAULT_PORT, appDir = APP_DIR, dataDir = def
   return { server, handler, store, origin, redirectUri, signInUrl, finishSignIn, accessToken, pending, tokens };
 }
 
+function donePage(title, text, ok) {
+  const e = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Unified Inbox</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0F1115;color:#E7E9EE;font:16px/1.5 system-ui,sans-serif}main{max-width:440px;padding:32px;border:1px solid #232733;border-radius:14px;background:#171A21;text-align:center}h1{font-size:20px;margin:0 0 8px;color:${ok ? '#7FE0C6' : '#FFB4A3'}}p{margin:0;color:#C9CDD6}</style></head>
+<body><main><h1>${e(title)}</h1><p>${e(text)}</p></main>${ok ? '<script>setTimeout(()=>window.close(),1500)</script>' : ''}</body></html>`;
+}
+
+// Opens a web address in your default browser.
+export function openDefaultBrowser(url) {
+  return new Promise((resolve, reject) => {
+    const [cmd, args] = process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+      : [process.platform === 'darwin' ? 'open' : 'xdg-open', [url]];
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', reject);
+    child.on('spawn', () => { child.unref(); resolve(); });
+  });
+}
+
 // ---------- starting from the launcher ----------
 function openBrowser(url) {
   if (process.platform === 'win32') {
     const edge = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles].filter(Boolean).map((p) => path.join(p, 'Microsoft', 'Edge', 'Application', 'msedge.exe')).find((p) => fs.existsSync(p));
     if (edge) spawn(edge, [`--app=${url}`], { detached: true, stdio: 'ignore' }).unref();
-    else spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  } else spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { detached: true, stdio: 'ignore' }).on('error', () => {}).unref();
+    else openDefaultBrowser(url).catch(() => {});
+  } else openDefaultBrowser(url).catch(() => {});
 }
 
 async function main() {
   const port = Number(process.env.UNIFIED_INBOX_PORT) || DEFAULT_PORT;
   const open = process.argv.includes('--open');
   const fromLauncher = process.env.UNIFIED_INBOX_LAUNCHER === '1';
-  const { server, handler, origin } = createApp({ port, onRestart: fromLauncher ? () => process.exit(RESTART_CODE) : null });
+  const { server, handler, origin } = createApp({ port, onRestart: fromLauncher ? () => process.exit(RESTART_CODE) : null, openUrl: openDefaultBrowser });
   server.on('error', async (e) => {
     if (e.code !== 'EADDRINUSE') { console.error(e); process.exit(1); }
     // Already running: just bring up the window.

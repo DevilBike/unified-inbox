@@ -145,11 +145,30 @@ test('signing in to the wrong mailbox is refused', async () => {
   assert.equal((await call('status')).data.accounts.length, 1);
 });
 
+test('sign-in from the app window: opens your browser, then reports back', async () => {
+  const opened = [];
+  const port2 = PORT + 1;
+  const app2 = createApp({ port: port2, appDir, dataDir, fetchImpl: fakeFetch, openUrl: async (u) => { opened.push(u); } });
+  await new Promise((r) => app2.server.listen(port2, '127.0.0.1', r));
+  try {
+    const api2 = async (p, opts = {}) => (await fetch(`http://127.0.0.1:${port2}/api/${p}`, { method: opts.method || 'GET', headers: { 'X-Inbox': '1', 'Content-Type': 'application/json' }, body: opts.body ? JSON.stringify(opts.body) : undefined })).json();
+    const start = await api2('signin', { method: 'POST', body: { provider: 'microsoft' } });
+    assert.equal(start.opened, true);
+    assert.equal(opened[0], start.url);
+    assert.deepEqual(await api2(`signin/${start.state}`), { done: false, email: null, error: null });
+    const back = await new Promise((resolve) => http.get({ host: '127.0.0.1', port: port2, path: `/auth/callback?state=${start.state}&code=x`, headers: { Host: `localhost:${port2}` } }, (res) => { let d = ''; res.on('data', (c) => { d += c; }); res.on('end', () => resolve({ status: res.statusCode, body: d })); }));
+    assert.equal(back.status, 200, 'shows a page in the browser instead of redirecting');
+    assert.match(back.body, /Signed in to person\.two@example\.net/);
+    assert.deepEqual(await api2(`signin/${start.state}`), { done: true, email: 'person.two@example.net', error: null });
+  } finally { await new Promise((r) => app2.server.close(r)); }
+});
+
 test('remove a mailbox and change its color', async () => {
   const id = encodeURIComponent('google:person.one@example.com');
   assert.equal((await call(`accounts/${id}`, { method: 'PATCH', body: { color: '#123456', refreshToken: 'nope' } })).data.color, '#123456');
   assert.notEqual(JSON.parse(fs.readFileSync(path.join(dataDir, 'accounts.json'), 'utf8'))[0].refreshToken, 'nope');
   await call(`accounts/${id}`, { method: 'DELETE' });
+  await call(`accounts/${encodeURIComponent('microsoft:person.two@example.net')}`, { method: 'DELETE' });
   assert.equal((await call('status')).data.accounts.length, 0);
 });
 

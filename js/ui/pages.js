@@ -7,6 +7,7 @@ import { gmailXmlToRules, parseRulesJson, exportRulesJson, mergeRules } from '..
 import { BUCKET_STAY, BUCKET_TRASH } from '../core/cleanup.js';
 import { shortName, pickFolder } from './mail.js';
 import { renderMessage } from './message.js';
+import { signInFlow } from './signin.js';
 
 const main = () => $('#main');
 const acctOf = (id) => svc.state.accounts.find((a) => a.id === id);
@@ -375,7 +376,7 @@ export async function showSettings(params = new URLSearchParams()) {
     <div class="card"><h2>Mailboxes</h2>
       <div id="acctList" style="display:flex;flex-direction:column;gap:10px"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="addG">Add Gmail</button><button class="btn primary" id="addM">Add Outlook / Hotmail</button></div>
-      <p style="font-size:12px">You sign in once per mailbox. The app keeps you signed in on this PC.</p>
+      <p style="font-size:12px">Sign-in opens in your browser. You approve once per mailbox and the app keeps you signed in on this PC.</p>
     </div>
     <form class="card" id="prefs"><h2>Reading</h2>
       <label class="check"><input type="checkbox" name="remoteImages" ${svc.state.prefs.remoteImages ? 'checked' : ''}> Always show images in emails <span class="muted">(off blocks tracking pixels)</span></label>
@@ -401,12 +402,13 @@ export async function showSettings(params = new URLSearchParams()) {
         <button class="btn small ${a.status === 'ok' ? '' : 'primary'}" data-signin="${esc(a.id)}">Sign in again</button><button class="btn small danger" data-rm="${esc(a.id)}">Remove</button></div>`).join('') || '<p>No mailboxes yet.</p>';
     $$('[data-color]').forEach((el) => { el.onchange = () => svc.updateAccount(el.dataset.color, { color: el.value }).catch(showError); });
     $$('[data-rm]').forEach((b) => { b.onclick = async () => { if (await confirmDialog('Remove mailbox?', 'This removes it from the app and forgets its sign-in on this PC. Your mail isn’t touched.', { ok: 'Remove', danger: true })) { await svc.removeAccount(b.dataset.rm); renderAccts(); } }; });
-    $$('[data-signin]').forEach((b) => { b.onclick = () => { const a = acctOf(b.dataset.signin); svc.signIn(a.provider, a.email); }; });
+    $$('[data-signin]').forEach((b) => { b.onclick = async () => { const a = acctOf(b.dataset.signin); if (await signInFlow(a.provider, a.email)) renderAccts(); }; });
   };
   renderAccts();
   const needSetup = (kind) => { toast(`Add your ${kind === 'google' ? 'Google client ID and secret' : 'Microsoft application ID'} under “Sign-in setup” first.`); $('#ids').scrollIntoView({ behavior: 'smooth' }); };
-  $('#addG').onclick = () => (svc.state.setup.google ? svc.signIn('google') : needSetup('google'));
-  $('#addM').onclick = () => (svc.state.setup.microsoft ? svc.signIn('microsoft') : needSetup('microsoft'));
+  const add = (kind) => async () => { if (!svc.state.setup[kind]) { needSetup(kind); return; } if (await signInFlow(kind)) renderAccts(); };
+  $('#addG').onclick = add('google');
+  $('#addM').onclick = add('microsoft');
   $('#prefs').onchange = (e) => svc.savePrefs({ [e.target.name]: e.target.checked });
   $('#ids').onsubmit = async (e) => {
     e.preventDefault();

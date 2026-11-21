@@ -1,11 +1,7 @@
 {
-  "version": "0.4.0",
+  "version": "0.4.1",
   "date": "2026-11-20",
   "changes": [
-    "Now a desktop app for cleaning up your inboxes. It runs on your PC from the Unified Inbox shortcut.",
-    "You stay signed in. No more reconnecting, and no Cloudflare helper needed.",
-    "While reviewing a cleanup you can read any message, send it somewhere else, or sort a whole sender at once.",
-    "“Always file sender” makes a rule from any message.",
-    "Writing mail, calendar, contacts and snooze were removed."
+    "Signing in now opens in your normal browser, where you're usually already signed in. Approve it there and the app picks it up by itself."
   ]
 }

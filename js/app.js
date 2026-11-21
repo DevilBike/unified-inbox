@@ -3,6 +3,7 @@ import * as svc from './service.js';
 import { MAIL_VIEWS, mail, showMail, refresh, handleMailKey, shortName } from './ui/mail.js';
 import { showRules, showCleanup, showSettings } from './ui/pages.js';
 import { showNotes } from './ui/notes.js';
+import { signInFlow } from './ui/signin.js';
 import { checkForUpdate, installUpdate } from './update.js';
 import { api } from './api.js';
 
@@ -66,7 +67,7 @@ function updateReconnect() {
 }
 $('#reconnectBtn').onclick = () => {
   const need = svc.accountsNeedingSignIn();
-  if (need.length === 1) svc.signIn(need[0].provider, need[0].email); else location.hash = '#/settings';
+  if (need.length === 1) signInFlow(need[0].provider, need[0].email).then((ok) => ok && render()); else location.hash = '#/settings';
 };
 
 // ---------- global UI ----------
